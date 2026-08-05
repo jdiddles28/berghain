@@ -46,6 +46,21 @@ export class ClubberView {
     this.head = new THREE.Mesh(new THREE.IcosahedronGeometry(0.155 * scale, 0), skinMat);
     this.head.position.y = 0.62 * scale;
 
+    // googly eyes on the front of the head (+z = body facing). MeshBasic so
+    // they stay bright in the dark — the whites are what reads across the club.
+    const whiteMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+    const pupilMat = new THREE.MeshBasicMaterial({ color: 0x0a0a0a });
+    const eyeGeo = new THREE.SphereGeometry(0.05 * scale, 10, 8);
+    const pupilGeo = new THREE.SphereGeometry(0.026 * scale, 8, 6);
+    for (const side of [-1, 1]) {
+      const eye = new THREE.Mesh(eyeGeo, whiteMat);
+      eye.position.set(side * 0.064 * scale, 0.02 * scale, 0.126 * scale);
+      const pupil = new THREE.Mesh(pupilGeo, pupilMat);
+      pupil.position.set(0, -0.01 * scale, 0.039 * scale); // pupil sits low — googly
+      eye.add(pupil);
+      this.head.add(eye);
+    }
+
     const armGeo = new THREE.CapsuleGeometry(0.06 * scale, 0.42 * scale, 1, 5);
     const legGeo = new THREE.CapsuleGeometry(0.075 * scale, 0.4 * scale, 1, 5);
 

@@ -85,6 +85,7 @@ export const CONFIG = {
     impactEvent: 140, // N·s above this: audible thud event
     downTime: 1.9, // ragdoll on the floor before trying to rise
     getupRamp: 0.85, // s over which the upright spring fades back in (the wobbly rise)
+    getupMaxTime: 2.4, // still not upright after this long rising = wedged; flop and retry
     getupBoost: 3.0, // spring strength multiplier while rising (gravity is strong, cheat a little)
     getupNudge: 1.6, // small upward velocity at start of rise so you unstick from the floor
     downAngularDamping: 1.1, // floppier while down
@@ -119,21 +120,31 @@ export const CONFIG = {
   },
 
   crowd: {
-    count: 20,
+    count: 32,
     radius: 0.27,
     halfHeight: 0.55, // NPCs are TALLER than the player — you look up at the crowd
     mass: 82, // people are HEAVY — bodying through a human should cost you
-    uprightKp: 460, // weaker than players — the crowd stumbles more easily
-    uprightKd: 120, // near-critical like players: walkers stand calm, no metronome sway
-    maxTorque: 380,
+    // scaled for the TALLER, HEAVIER body (halfHeight .55 / mass 82): gravity
+    // torque at the 58° fall threshold is ~560 N·m, so anything less than that
+    // in maxTorque means every stumble past ~35° is an unrecoverable slow-motion
+    // faceplant (John playtest: "walking at a 45 degree angle, flopping around").
+    // Stumbles still happen — via stagger and the impulse accumulator, not via
+    // a spring too weak to stand a body up.
+    uprightKp: 560,
+    uprightKd: 190, // near critical for this kp/inertia — no metronome sway
+    maxTorque: 600,
     moveSpeed: 1.1,
     accelGain: 5,
     maxAccel: 12,
     // the crowd splits: a pack DANCING mid-floor (genuinely hopping, whole
     // body, staying roughly in place near each other) and a handful of
     // non-dancers walking the edges with no bounce in them at all.
-    dancers: 14, // NPC index < dancers ⇒ dancer; the rest are walkers
-    danceZone: { x: 0, z: -0.8, r: 2.9 }, // pack center + radius
+    dancers: 22, // NPC index < dancers ⇒ dancer; the rest are walkers
+    danceZone: { x: 0, z: -0.8, r: 2.2 }, // spawn seed + soft mid-floor bias
+    // dancers lump toward the live centroid of the pack, not a fixed spot
+    // (John: "not necessarily 1 defined place, but they like to lump together").
+    // Knocked away ⇒ they walk back to wherever the mass currently is.
+    packRadius: 1.7, // further than this from the mass → shuffle back in
     bounceVel: 1.25, // vertical hop velocity on their beat — actually airborne
     danceJitter: [6, 16] as const, // small horizontal shuffle N·s — stays in place
     danceEveryBeats: 2, // each dancer hits every N beats, staggered

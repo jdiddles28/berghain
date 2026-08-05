@@ -92,6 +92,11 @@ export class Sim {
   time = 0;
   players = new Map<string, Character>();
   npcs: Character[] = [];
+  /** live center of the dancing mass — dancers lump toward each other */
+  private packCenter: { x: number; z: number } = {
+    x: CONFIG.crowd.danceZone.x,
+    z: CONFIG.crowd.danceZone.z,
+  };
   lastEvents: GameEvent[] = [];
   private eventQueue: GameEvent[] = [];
 
@@ -225,6 +230,7 @@ export class Sim {
     for (const [id, ch] of this.players) {
       this.updateCharacter(ch, inputs.get(id) ?? ZERO_INPUT, dt);
     }
+    this.updatePackCenter();
     for (const npc of this.npcs) {
       this.updateNpcBrain(npc, dt);
     }
@@ -262,8 +268,18 @@ export class Sim {
       return; // no control while down
     }
     if (ch.state === 2 && ch.stateT >= CONFIG.balance.getupRamp) {
-      ch.state = 0;
-      ch.stateT = 0;
+      // hand control back only once ACTUALLY upright — a timer-only transition
+      // re-floored anyone whose rise ran a beat long (tall NPCs: infinite
+      // knockdown loop, "flopping around on the floor" in John's playtest)
+      const upNow = rotateVec(ch.body.rotation(), { x: 0, y: 1, z: 0 }).y;
+      const standCos = Math.cos((CONFIG.balance.tiltFallDeg * 0.7 * Math.PI) / 180);
+      if (upNow > standCos) {
+        ch.state = 0;
+        ch.stateT = 0;
+      } else if (ch.stateT >= CONFIG.balance.getupMaxTime) {
+        // wedged (under a pile, against a wall) — flop back down, retry later
+        this.knockDown(ch);
+      }
     }
 
     // upright spring (ramped during get-up so the rise is a wobble, not a snap;
@@ -560,6 +576,35 @@ export class Sim {
 
   // ---------- crowd ----------
 
+  /** Where the dancing mass currently is: centroid of upright dancers with a
+   *  soft pull toward mid-floor so the lump doesn't migrate into a wall. Not a
+   *  fixed spot — knock the pack around and it reforms wherever it lands. */
+  private updatePackCenter(): void {
+    const C = CONFIG.crowd;
+    let x = 0;
+    let z = 0;
+    let n = 0;
+    const dancerCount = Math.min(C.dancers, this.npcs.length);
+    for (let i = 0; i < dancerCount; i++) {
+      const npc = this.npcs[i];
+      if (npc.state !== 0) continue;
+      const p = npc.pos();
+      x += p.x;
+      z += p.z;
+      n++;
+    }
+    if (n === 0) {
+      // the whole pack is on the floor — regroup mid-room once they're up
+      this.packCenter = { x: C.danceZone.x, z: C.danceZone.z };
+      return;
+    }
+    const bias = 0.12;
+    this.packCenter = {
+      x: (x / n) * (1 - bias) + C.danceZone.x * bias,
+      z: (z / n) * (1 - bias) + C.danceZone.z * bias,
+    };
+  }
+
   private updateNpcBrain(npc: Character, dt: number): void {
     const C = CONFIG.crowd;
     const isDancer = this.npcs.indexOf(npc) < C.dancers;
@@ -569,6 +614,7 @@ export class Sim {
 
     const input: PlayerInput = { ...ZERO_INPUT };
     if (npc.state === 0) {
+      const p = npc.pos();
       if (isDancer) {
         // GENUINE full-body hop on their beat slot (grounded only, so energy
         // can't stack) + a small shuffle. They dance in place, in the pack.
@@ -583,10 +629,14 @@ export class Sim {
           const mag = randRange(...C.danceJitter);
           npc.body.applyImpulse({ x: Math.cos(ang) * mag, y: 0, z: Math.sin(ang) * mag }, true);
         }
-        npc.wanderT -= dt;
-        if (npc.wanderT <= 0) {
-          npc.wanderT = randRange(...C.wanderEvery);
-          npc.home = this.danceSpot();
+        // lump toward the mass: shoved out (or freshly back on their feet),
+        // they walk back to wherever the pack IS now
+        const hx = this.packCenter.x - p.x;
+        const hz = this.packCenter.z - p.z;
+        const hd = Math.hypot(hx, hz);
+        if (hd > C.packRadius) {
+          input.moveX = hx / hd;
+          input.moveZ = hz / hd;
         }
       } else {
         // walkers: no bounce in them at all, just slow laps around the edges
@@ -595,15 +645,13 @@ export class Sim {
           npc.wanderT = randRange(...C.wanderEvery);
           npc.home = this.edgeSpot();
         }
-      }
-      const p = npc.pos();
-      const hx = npc.home.x - p.x;
-      const hz = npc.home.z - p.z;
-      const hd = Math.hypot(hx, hz);
-      // dancers only shuffle back when they've drifted out of the pack
-      if (hd > (isDancer ? 1.3 : 0.8)) {
-        input.moveX = hx / hd;
-        input.moveZ = hz / hd;
+        const hx = npc.home.x - p.x;
+        const hz = npc.home.z - p.z;
+        const hd = Math.hypot(hx, hz);
+        if (hd > 0.8) {
+          input.moveX = hx / hd;
+          input.moveZ = hz / hd;
+        }
       }
     }
     this.updateCharacter(npc, input, dt);

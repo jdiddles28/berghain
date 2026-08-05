@@ -14,7 +14,7 @@ export class Input {
   private grabHeld = false;
   locked = false;
 
-  constructor(el: HTMLElement) {
+  constructor(private el: HTMLElement) {
     window.addEventListener('keydown', (e) => {
       if (e.repeat) return;
       this.keys.add(e.code);
@@ -27,10 +27,9 @@ export class Input {
     window.addEventListener('blur', () => this.keys.clear());
 
     el.addEventListener('mousedown', (e) => {
-      if (!this.locked) {
-        el.requestPointerLock();
-        return;
-      }
+      if (!this.locked) this.tryLock();
+      // actions fire whether or not the lock took — pointer lock is flaky on
+      // some machines (Maja's playtest) and the game must stay playable without it
       if (e.button === 0) this.shoveQueued = true;
       if (e.button === 2) this.grabHeld = true;
     });
@@ -43,13 +42,39 @@ export class Input {
       if (!this.locked) this.keys.clear();
     });
     window.addEventListener('mousemove', (e) => {
-      if (!this.locked) return;
+      // locked: normal mouselook. unlocked: drag-look with any button held —
+      // the works-everywhere fallback when a browser won't hold the lock
+      if (!this.locked && e.buttons === 0) return;
       this.camYaw -= e.movementX * 0.0024;
       this.camPitch = Math.max(
         CONFIG.camera.pitchMin,
         Math.min(CONFIG.camera.pitchMax, this.camPitch - e.movementY * 0.0022),
       );
     });
+  }
+
+  /** Pointer lock with raw (unaccelerated) input where supported. Chrome
+   *  returns a promise that REJECTS both when unadjustedMovement is
+   *  unsupported and when Esc was pressed too recently — fall back to a plain
+   *  request instead of failing silently. */
+  private tryLock(): void {
+    let p: unknown;
+    try {
+      p = (
+        this.el.requestPointerLock as unknown as (o?: { unadjustedMovement: boolean }) => unknown
+      ).call(this.el, { unadjustedMovement: true });
+    } catch {
+      p = this.el.requestPointerLock();
+    }
+    if (p instanceof Promise) {
+      p.catch(() => {
+        try {
+          this.el.requestPointerLock();
+        } catch {
+          /* no pointer lock on this browser — drag-look covers it */
+        }
+      });
+    }
   }
 
   /** Sample and clear edge-triggered actions. */

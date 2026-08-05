@@ -74,6 +74,14 @@ describe('wobbly body physics', () => {
     sim.addPlayer('p1');
     const a = sim.players.get('p0')!;
     const b = sim.players.get('p1')!;
+    // park the crowd by the stage — the dance pack now owns the mid-floor and
+    // would jostle the test pair out of position during the settle
+    sim.npcs.forEach((npc, i) => {
+      const x = -7 + (i % 10) * 1.4;
+      const z = -4.9 + Math.floor(i / 10) * 0.8;
+      npc.body.setTranslation({ x, y: 1.0, z }, true);
+      npc.home = { x, z };
+    });
     // mid-floor with open space in the +z knockback path (not against a wall)
     a.body.setTranslation({ x: 0, y: 0.85, z: -1.2 }, true);
     b.body.setTranslation({ x: 0, y: 0.85, z: -0.4 }, true);
@@ -130,8 +138,10 @@ describe('wobbly body physics', () => {
     sim2.addPlayer('p0');
     sim2.players.get('p0')!.body.setTranslation({ x: 0, y: 0.85, z: 0 }, true);
     sim2.npcs.forEach((npc, i) => {
-      npc.body.setTranslation({ x: -7 + (i % 10) * 1.4, y: 1.0, z: -4.6 }, true);
-      npc.home = { x: -7 + (i % 10) * 1.4, z: -4.6 };
+      const x = -7 + (i % 10) * 1.4;
+      const z = -4.9 + Math.floor(i / 10) * 0.8;
+      npc.body.setTranslation({ x, y: 1.0, z }, true);
+      npc.home = { x, z };
     });
     run(sim2, 10);
     run(sim2, 5, { grab: true }); // nothing within 1.1 m in front

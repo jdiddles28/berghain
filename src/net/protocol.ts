@@ -13,7 +13,9 @@ export const INTERP_DELAY_SNAPS = 2.5;
 // on a stale tab + one freshly refreshed = garbage snapshots and a black
 // screen (Maja/John, 2026-08-05). The handshake catches it with a clear
 // "refresh your page" instead.
-export const PROTOCOL_VERSION = 3;
+// Also fine to bump when a fix simply MUST reach everyone (b4: crowd balance +
+// the pointer-lock fallback) — the handshake doubles as a build-freshness gate.
+export const PROTOCOL_VERSION = 4;
 
 export type CtlMsg =
   | { t: 'hello'; v?: number; name?: string }

@@ -64,7 +64,8 @@ async function start(mode: 'host' | 'join'): Promise<void> {
     }
 
     hud.textContent =
-      session.status() + (input.locked ? '' : '\nclick to grab the mouse');
+      session.status() +
+      (input.locked ? '' : '\nclick to grab the mouse · or hold a button + drag to look');
     requestAnimationFrame(loop);
   };
   requestAnimationFrame(loop);
