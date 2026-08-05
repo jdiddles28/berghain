@@ -141,6 +141,7 @@ export class HostSession implements Session {
             moveX: msg.mx,
             moveZ: msg.mz,
             faceYaw: msg.fy,
+            facePitch: msg.fp,
             hop: false,
             shove: false,
             grab: msg.g === 1,

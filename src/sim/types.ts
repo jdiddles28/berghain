@@ -18,6 +18,8 @@ export interface PlayerInput {
   moveZ: number;
   /** world yaw the body should face (first person: where the camera looks) */
   faceYaw: number;
+  /** camera pitch — grabs reach along the actual look direction */
+  facePitch: number;
   hop: boolean; // edge-triggered (latched by host)
   shove: boolean; // edge-triggered
   grab: boolean; // held
@@ -27,6 +29,7 @@ export const ZERO_INPUT: PlayerInput = {
   moveX: 0,
   moveZ: 0,
   faceYaw: 0,
+  facePitch: 0,
   hop: false,
   shove: false,
   grab: false,
@@ -40,8 +43,8 @@ export interface BodySnap {
   rot: Quat;
   vel: Vec3;
   st: BodyState;
-  /** who this body is gripping: player index 0..2, or 100+npcIndex, or -1 */
-  grip: number;
+  /** world point this body's hands are gripping (any solid), or null */
+  gripPoint: Vec3 | null;
   /** action flag for the view: 0 none · 1 mid-shove · 2 staggered */
   act: 0 | 1 | 2;
 }
@@ -88,7 +91,7 @@ function lerpBody(a: BodySnap, b: BodySnap, t: number): BodySnap {
     rot: slerp(a.rot, b.rot, t),
     vel: lerpV(a.vel, b.vel, t),
     st: b.st,
-    grip: b.grip,
+    gripPoint: a.gripPoint && b.gripPoint ? lerpV(a.gripPoint, b.gripPoint, t) : b.gripPoint,
     act: b.act,
   };
 }

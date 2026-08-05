@@ -88,10 +88,9 @@ describe('wobbly body physics', () => {
     const dv = Math.hypot(after.x - before.x, after.z - before.z);
     expect(dv).toBeGreaterThan(1.0);
     expect(sim.lastEvents.some((e) => e.t === 'shove' && e.hit)).toBe(true);
-    // the shover shows the arms-out pose; the victim is staggered (motor
-    // control cut, so the knockback actually carries them)
+    // the shover shows the arms-out pose; a CLEAN shove knocks the victim down
     expect(snap.players['p0'].act).toBe(1);
-    expect(snap.players['p1'].act).toBe(2);
+    expect(snap.players['p1'].st).toBe(1);
     const start = snap.players['p1'].pos;
     run(sim, 30);
     const carried = sim.snapshot().players['p1'].pos;
@@ -112,6 +111,31 @@ describe('wobbly body physics', () => {
     }
     const standing = snap.npcs.filter((n) => n.st === 0).length;
     expect(standing).toBeGreaterThan(CONFIG.crowd.count * 0.6);
+  });
+
+  it('grabbing needs physical contact and sticks to walls too', () => {
+    const sim = new Sim();
+    sim.addPlayer('p0');
+    const a = sim.players.get('p0')!;
+    const R = CONFIG.room;
+    // face the +z wall from just inside reach
+    a.body.setTranslation({ x: 0, y: 0.85, z: R.d / 2 - 0.9 }, true);
+    run(sim, 10);
+    run(sim, 5, { grab: true }); // faceYaw 0 → reaching +z at the wall
+    const holding = sim.snapshot().players['p0'];
+    expect(holding.gripPoint).not.toBeNull();
+    expect(holding.gripPoint!.z).toBeGreaterThan(R.d / 2 - 0.4); // anchored ON the wall
+    // out of reach: hands don't connect, no grab
+    const sim2 = new Sim();
+    sim2.addPlayer('p0');
+    sim2.players.get('p0')!.body.setTranslation({ x: 0, y: 0.85, z: 0 }, true);
+    sim2.npcs.forEach((npc, i) => {
+      npc.body.setTranslation({ x: -7 + (i % 10) * 1.4, y: 1.0, z: -4.6 }, true);
+      npc.home = { x: -7 + (i % 10) * 1.4, z: -4.6 };
+    });
+    run(sim2, 10);
+    run(sim2, 5, { grab: true }); // nothing within 1.1 m in front
+    expect(sim2.snapshot().players['p0'].gripPoint).toBeNull();
   });
 
   it('grab pulls the target toward the holder', () => {

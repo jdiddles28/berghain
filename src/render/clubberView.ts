@@ -60,6 +60,11 @@ export class ClubberView {
     this.head.visible = v;
   }
 
+  setArmsVisible(v: boolean): void {
+    this.armL.visible = v;
+    this.armR.visible = v;
+  }
+
   update(b: BodySnap, dt: number, beat: number, opts?: ClubberFrameOpts): void {
     this.group.position.set(b.pos.x, b.pos.y, b.pos.z);
     this.group.quaternion.set(b.rot.x, b.rot.y, b.rot.z, b.rot.w);

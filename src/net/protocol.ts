@@ -15,16 +15,16 @@ export type CtlMsg =
   | { t: 'full' }
   | { t: 'ev'; evs: GameEvent[] };
 
-// body: [x,y,z, qx,qy,qz,qw, vx,vy,vz, state, grip, act]
+// body: [x,y,z, qx,qy,qz,qw, vx,vy,vz, state, act, hasGrip, gx,gy,gz]
 export type BodyWire = [
   number, number, number,
   number, number, number, number,
   number, number, number,
-  number, number, number,
+  number, number, number, number, number, number,
 ];
 
 export type FastMsg =
-  | { t: 'in'; mx: number; mz: number; fy: number; h: 0 | 1; s: 0 | 1; g: 0 | 1 }
+  | { t: 'in'; mx: number; mz: number; fy: number; fp: number; h: 0 | 1; s: 0 | 1; g: 0 | 1 }
   | { t: 'snap'; seq: number; time: number; players: Record<string, BodyWire>; npcs: BodyWire[] };
 
 export function encodeSnapshot(seq: number, snap: SimSnapshot): FastMsg {
@@ -55,7 +55,9 @@ function enc(b: BodySnap): BodyWire {
     r3(b.pos.x), r3(b.pos.y), r3(b.pos.z),
     r3(b.rot.x), r3(b.rot.y), r3(b.rot.z), r3(b.rot.w),
     r3(b.vel.x), r3(b.vel.y), r3(b.vel.z),
-    b.st, b.grip, b.act,
+    b.st, b.act,
+    b.gripPoint ? 1 : 0,
+    r3(b.gripPoint?.x ?? 0), r3(b.gripPoint?.y ?? 0), r3(b.gripPoint?.z ?? 0),
   ];
 }
 
@@ -65,8 +67,8 @@ function dec(w: BodyWire): BodySnap {
     rot: { x: w[3], y: w[4], z: w[5], w: w[6] },
     vel: { x: w[7], y: w[8], z: w[9] },
     st: w[10] as BodySnap['st'],
-    grip: w[11],
-    act: w[12] as BodySnap['act'],
+    act: w[11] as BodySnap['act'],
+    gripPoint: w[12] === 1 ? { x: w[13], y: w[14], z: w[15] } : null,
   };
 }
 

@@ -43,8 +43,8 @@ class Character {
   shoveT = 0; // arms-out shove animation window (broadcast via act)
   hopCd = 0;
   shoveCd = 0;
-  grip: Character | null = null;
-  gripIdx = -1; // wire index of gripped char
+  /** universal grip: any solid body, stuck at the exact contact point */
+  grip: { body: RAPIER.RigidBody; local: { x: number; y: number; z: number } } | null = null;
   swayPhase = Math.random() * Math.PI * 2;
   prevVx = 0; // last step's horizontal velocity — impact detection
   prevVz = 0;
@@ -178,7 +178,9 @@ export class Sim {
   removePlayer(id: string): void {
     const p = this.players.get(id);
     if (!p) return;
-    for (const other of this.allChars()) if (other.grip === p) this.releaseGrip(other);
+    for (const other of this.allChars()) {
+      if (other.grip?.body === p.body) this.releaseGrip(other);
+    }
     this.releaseGrip(p);
     this.world.removeRigidBody(p.body);
     this.players.delete(id);
@@ -291,7 +293,7 @@ export class Sim {
 
     // grab (players only — hold to grip, release to drop)
     if (ch.isPlayer) {
-      if (input.grab && !ch.grip) this.tryGrab(ch);
+      if (input.grab && !ch.grip) this.tryGrab(ch, input);
       else if (!input.grab && ch.grip) this.releaseGrip(ch);
     }
   }
@@ -335,18 +337,21 @@ export class Sim {
     }
     ch.body.addTorque({ x: tx, y: ty, z: tz }, true);
 
-    // yaw servo. players (first person): always face where the camera looks.
-    // NPCs: face their movement direction when walking.
+    // yaw servo. players (first person): track the look direction near-1:1 —
+    // a body that lags the head is uncanny. NPCs: amble toward their heading.
     let targetYaw: number | null = null;
     if (ch.isPlayer) targetYaw = input.faceYaw;
     else if (Math.hypot(input.moveX, input.moveZ) > 0.1)
       targetYaw = Math.atan2(input.moveX, input.moveZ);
     if (targetYaw !== null) {
+      const gain = ch.isPlayer ? CONFIG.body.yawGain : 60;
+      const damp = ch.isPlayer ? CONFIG.body.yawDamp : 12;
+      const maxYawT = ch.isPlayer ? CONFIG.body.yawMaxTorque : 90;
       const currYaw = yawOf(rot);
       let dyaw = targetYaw - currYaw;
       while (dyaw > Math.PI) dyaw -= Math.PI * 2;
       while (dyaw < -Math.PI) dyaw += Math.PI * 2;
-      const yawTorque = clampN(dyaw * 60 - av.y * 12, 90) * scale;
+      const yawTorque = clampN(dyaw * gain - av.y * damp, maxYawT) * scale;
       ch.body.addTorque({ x: 0, y: yawTorque, z: 0 }, true);
     }
   }
@@ -385,8 +390,7 @@ export class Sim {
     ch.stateT = 0;
     ch.hitAccum = 0;
     ch.body.setAngularDamping(CONFIG.balance.downAngularDamping);
-    this.releaseGrip(ch);
-    for (const other of this.allChars()) if (other.grip === ch) {} // grips on a downed body keep dragging — that's the toy
+    this.releaseGrip(ch); // you drop what YOU hold; grips ON you keep dragging — that's the toy
     this.emit({ t: 'fall', ...vec(ch.pos()) });
   }
 
@@ -432,50 +436,69 @@ export class Sim {
     this.emit({ t: 'shove', ...vec(p), hit });
   }
 
-  private tryGrab(ch: Character): void {
-    const p = ch.pos();
-    const fwd = rotateVec(ch.body.rotation(), { x: 0, y: 0, z: 1 });
-    const fxz = norm2(fwd.x, fwd.z);
-    let best: Character | null = null;
-    let bestDist: number = CONFIG.grab.reach;
-    const chars = this.allChars();
-    for (const other of chars) {
-      if (other === ch) continue;
-      const op = other.pos();
-      const dx = op.x - p.x;
-      const dz = op.z - p.z;
-      const dist = Math.hypot(dx, dz);
-      if (dist > CONFIG.grab.reach || dist < 1e-4) continue;
-      const dot = (dx / dist) * fxz.x + (dz / dist) * fxz.z;
-      if (dot < 0.25) continue; // roughly in front
-      if (dist < bestDist) {
-        best = other;
-        bestDist = dist;
-      }
-    }
-    if (best) {
-      ch.grip = best;
-      ch.gripIdx = this.wireIndex(best);
-      this.emit({ t: 'grab', ...vec(p), on: true });
-    }
+  /** REPO-style: cast the hand along the LOOK direction. Whatever solid it
+   *  touches — person, wall, pillar, stage — stick to the exact contact point.
+   *  No contact within arm's reach, no grab. */
+  private tryGrab(ch: Character, input: PlayerInput): void {
+    const origin = this.grabHandPoint(ch);
+    const cp = Math.cos(input.facePitch);
+    const dir = {
+      x: Math.sin(input.faceYaw) * cp,
+      y: Math.sin(input.facePitch),
+      z: Math.cos(input.faceYaw) * cp,
+    };
+    const ray = new RAPIER.Ray(origin, dir);
+    const hit = this.world.castRay(
+      ray,
+      CONFIG.grab.reach,
+      true,
+      undefined,
+      undefined,
+      undefined,
+      ch.body,
+    );
+    if (!hit) return;
+    const target = hit.collider.parent();
+    if (!target) return;
+    const point = {
+      x: origin.x + dir.x * hit.timeOfImpact,
+      y: origin.y + dir.y * hit.timeOfImpact,
+      z: origin.z + dir.z * hit.timeOfImpact,
+    };
+    // store the anchor in the target body's local frame so it rides along
+    const tp = target.translation();
+    const local = rotateVecInv(target.rotation(), {
+      x: point.x - tp.x,
+      y: point.y - tp.y,
+      z: point.z - tp.z,
+    });
+    ch.grip = { body: target, local };
+    this.emit({ t: 'grab', ...point, on: true });
   }
 
   private releaseGrip(ch: Character): void {
     if (!ch.grip) return;
     ch.grip = null;
-    ch.gripIdx = -1;
     this.emit({ t: 'grab', ...vec(ch.pos()), on: false });
   }
 
-  /** soft spring HAND-to-BODY between holder and held — struggle stays organic,
-   *  no joints. Forces act at the hand/shoulder points so dragged bodies twist
-   *  and get hauled by the arm rather than towed by the navel. */
+  /** world position of a character's current grip anchor, or null */
+  gripAnchorWorld(ch: Character): { x: number; y: number; z: number } | null {
+    if (!ch.grip) return null;
+    const tp = ch.grip.body.translation();
+    const w = rotateVec(ch.grip.body.rotation(), ch.grip.local);
+    return { x: tp.x + w.x, y: tp.y + w.y, z: tp.z + w.z };
+  }
+
+  /** stiff spring "grip" between the hand and the anchor point — both bodies
+   *  pull on each other (Newton). Fixed bodies (walls) simply don't move, so
+   *  you can anchor yourself against them. Torn apart past breakDist. */
   private updateGrips(): void {
     const G = CONFIG.grab;
     for (const ch of this.allChars()) {
       if (!ch.grip) continue;
       const hand = this.grabHandPoint(ch);
-      const attach = this.grabAttachPoint(ch, ch.grip);
+      const attach = this.gripAnchorWorld(ch)!;
       const dx = attach.x - hand.x;
       const dy = attach.y - hand.y;
       const dz = attach.z - hand.z;
@@ -490,14 +513,16 @@ export class Sim {
       const relV = (vb.x - va.x) * dir.x + (vb.y - va.y) * dir.y + (vb.z - va.z) * dir.z;
       let f = (dist - G.restLen) * G.springK + relV * G.springDamp;
       f = clampN(f, G.maxForce);
-      // pull held (at their shoulder) toward the holder's hand, and the holder
-      // toward the load — dragging genuinely costs you balance and speed
       ch.grip.body.addForceAtPoint(
-        { x: -dir.x * f, y: -dir.y * f * 0.3, z: -dir.z * f },
+        { x: -dir.x * f, y: -dir.y * f * 0.35, z: -dir.z * f },
         attach,
         true,
       );
-      ch.body.addForceAtPoint({ x: dir.x * f * 0.55, y: 0, z: dir.z * f * 0.55 }, hand, true);
+      ch.body.addForceAtPoint(
+        { x: dir.x * f * 0.7, y: dir.y * f * 0.25, z: dir.z * f * 0.7 },
+        hand,
+        true,
+      );
     }
   }
 
@@ -506,21 +531,6 @@ export class Sim {
     const p = ch.pos();
     const h = rotateVec(ch.body.rotation(), CONFIG.grab.handLocal);
     return { x: p.x + h.x, y: p.y + h.y, z: p.z + h.z };
-  }
-
-  /** attach point on the grabbed body: their near shoulder (side facing holder) */
-  grabAttachPoint(holder: Character, held: Character): { x: number; y: number; z: number } {
-    const hp = holder.pos();
-    const tp = held.pos();
-    const dx = hp.x - tp.x;
-    const dz = hp.z - tp.z;
-    const d = Math.hypot(dx, dz) || 1;
-    const r = held.cfg.radius;
-    return {
-      x: tp.x + (dx / d) * r,
-      y: tp.y + CONFIG.grab.targetHeight,
-      z: tp.z + (dz / d) * r,
-    };
   }
 
   // ---------- crowd ----------
@@ -592,13 +602,6 @@ export class Sim {
 
   // ---------- snapshots ----------
 
-  private wireIndex(ch: Character): number {
-    const players = [...this.players.values()];
-    const pi = players.indexOf(ch);
-    if (pi >= 0) return pi;
-    return 100 + this.npcs.indexOf(ch);
-  }
-
   snapshot(): SimSnapshot {
     const players: Record<string, BodySnap> = {};
     for (const [id, ch] of this.players) players[id] = this.snapBody(ch);
@@ -619,7 +622,7 @@ export class Sim {
       rot: { x: r.x, y: r.y, z: r.z, w: r.w },
       vel: { x: v.x, y: v.y, z: v.z },
       st: ch.state,
-      grip: ch.gripIdx,
+      gripPoint: this.gripAnchorWorld(ch),
       act: ch.shoveT > 0 ? 1 : ch.staggerT > 0 ? 2 : 0,
     };
   }
@@ -643,6 +646,13 @@ function rotateVec(q: { x: number; y: number; z: number; w: number }, v: { x: nu
     y: iy * w + iw * -y + iz * -x - ix * -z,
     z: iz * w + iw * -z + ix * -y - iy * -x,
   };
+}
+
+function rotateVecInv(
+  q: { x: number; y: number; z: number; w: number },
+  v: { x: number; y: number; z: number },
+) {
+  return rotateVec({ x: -q.x, y: -q.y, z: -q.z, w: q.w }, v);
 }
 
 function yawOf(q: { x: number; y: number; z: number; w: number }): number {

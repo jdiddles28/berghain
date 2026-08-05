@@ -82,6 +82,7 @@ export class Input {
       moveX,
       moveZ,
       faceYaw,
+      facePitch: this.camPitch,
       hop: this.hopQueued,
       shove: this.shoveQueued,
       grab: this.grabHeld,

@@ -150,26 +150,16 @@ export class View {
     for (const id of Object.keys(frame.players)) {
       this.ensurePlayer(id, slot++);
     }
-    const playerIds = Object.keys(frame.players);
-    const gripTarget = (b: { grip: number; pos: { x: number; y: number; z: number } }) => {
-      if (b.grip < 0) return null;
-      const t = b.grip >= 100 ? frame.npcs[b.grip - 100] : frame.players[playerIds[b.grip]];
-      if (!t) return null;
-      // near-shoulder attach point, mirroring the sim's grabAttachPoint
-      const dx = b.pos.x - t.pos.x;
-      const dz = b.pos.z - t.pos.z;
-      const d = Math.hypot(dx, dz) || 1;
-      return new THREE.Vector3(
-        t.pos.x + (dx / d) * 0.27,
-        t.pos.y + 0.3,
-        t.pos.z + (dz / d) * 0.27,
-      );
-    };
+    const gripTarget = (b: { gripPoint: { x: number; y: number; z: number } | null }) =>
+      b.gripPoint ? new THREE.Vector3(b.gripPoint.x, b.gripPoint.y, b.gripPoint.z) : null;
     for (const [id, cv] of this.players) {
       const b = frame.players[id];
       if (b) {
         cv.update(b, dt, frame.beat, { grabTarget: gripTarget(b) });
         cv.setHeadVisible(id !== localId); // first person: don't render your own head
+        // own arms only appear when they're DOING something (shove/grab) —
+        // idle arms pumping at the bottom of an FP view is just noise
+        cv.setArmsVisible(id !== localId || b.act === 1 || b.gripPoint !== null);
       }
     }
     // crowd
@@ -185,7 +175,9 @@ export class View {
       this.scene.add(cv.group);
     }
     for (let i = 0; i < frame.npcs.length; i++)
-      this.npcs[i].update(frame.npcs[i], dt, frame.beat, { grabTarget: gripTarget(frame.npcs[i]) });
+      this.npcs[i].update(frame.npcs[i], dt, frame.beat, {
+        grabTarget: gripTarget(frame.npcs[i]),
+      });
 
     // light rig rides the beat
     const beatFrac = frame.beat - Math.floor(frame.beat);
@@ -199,16 +191,23 @@ export class View {
     const phrase = frame.beat % 16;
     this.strobe.intensity = phrase < 0.5 || (phrase > 1 && phrase < 1.3) ? 55 : 0;
 
-    // FIRST-PERSON camera: eye rides the physics body, so every stumble, shove
-    // and ragdoll is FELT. Mouse owns yaw/pitch; the body's tilt bleeds in as
-    // view roll (fully when you're on the floor).
+    // FIRST-PERSON camera, head-stabilized (Peak): the eye follows the body's
+    // POSITION but not its tilt jitter — an underdamped capsule welded to the
+    // camera is a paint shaker. Upright: yaw-only offset, hint of roll.
+    // Ragdolled: the camera goes down with the body and rolls fully.
     const me = frame.players[localId];
     if (me) {
       const C = CONFIG.camera;
       const bodyQ = new THREE.Quaternion(me.rot.x, me.rot.y, me.rot.z, me.rot.w);
-      const eye = new THREE.Vector3(C.eyeLocal.x, C.eyeLocal.y, C.eyeLocal.z)
-        .applyQuaternion(bodyQ)
-        .add(new THREE.Vector3(me.pos.x, me.pos.y, me.pos.z));
+      const eye = new THREE.Vector3(me.pos.x, me.pos.y, me.pos.z);
+      if (me.st === 1) {
+        // down: eye welded to the tumbling body
+        eye.add(new THREE.Vector3(0, C.eyeHeight, C.eyeFwd).applyQuaternion(bodyQ));
+      } else {
+        eye.y += C.eyeHeight;
+        eye.x += -Math.sin(camYaw) * C.eyeFwd; // forward of the face, yaw-only
+        eye.z += -Math.cos(camYaw) * C.eyeFwd;
+      }
       this.camera.position.copy(eye);
 
       this.camera.quaternion.setFromEuler(new THREE.Euler(camPitch, camYaw, 0, 'YXZ'));

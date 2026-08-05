@@ -59,7 +59,18 @@ designs and playtests. Status: **pre-prototype — nothing has been built yet.**
   running never tips you, weak enough that real hits do.
 - Knockdown = accumulated sudden horizontal Δv (mass·Δv in `balance.impulseWindow`) past
   `impulseFall`, or extreme tilt → full ragdoll → timed wobbly get-up (spring ramps back with
-  `getupBoost`). One shove ≈ 90% of threshold; two quick hits floor you.
+  `getupBoost`). One CLEAN shove floors someone (John's ruling); glancing hits stagger.
+- Impacts also STAGGER (motor control cut ~staggerMax) — without this the victim's own
+  movement controller cancels knockback within 3 frames and shoves don't read.
+- Balance spring kd near critical damping — underdamped bodies oscillate, which reads as
+  BOUNCING in first person (John playtest). Standing still must be planted (~0.2° sway).
+- GRAB is universal + physical (REPO reference, John's ruling): hand-ray along the look
+  direction, reach ~1.1 m; whatever solid it hits — person, wall, pillar, prop — you stick to
+  the exact contact point (anchor stored target-local) and pull on each other via a stiff
+  spring at the points. No contact = no grab. Snapshots carry `gripPoint` for arm-reach visuals.
+- First person is HEAD-STABILIZED like Peak: eye follows body position (yaw-only offset),
+  small roll blend upright, full weld+roll only when ragdolled. Never bolt the camera to the
+  raw body transform.
 - Character colliders: near-zero friction + `CoefficientCombineRule.Min` (real floor friction =
   permanent 49° lean, discovered the hard way). The controller brakes; shoved bodies slide.
 - Hard-won Rapier lessons: `addForce` PERSISTS — reset forces/torques at the top of every step.

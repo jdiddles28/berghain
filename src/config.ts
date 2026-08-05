@@ -38,12 +38,19 @@ export const CONFIG = {
     // upright PD controller. kp limited by maxTorque — big hits overwhelm it.
     // strong enough that RUNNING never tips you: knockdowns come from the
     // impulse accumulator (balance.impulseFall), not from friction torque.
+    // kd near critical damping (~207 for this kp/inertia): an underdamped body
+    // visibly oscillates after every nudge, which reads as BOUNCING in FP.
     uprightKp: 640,
-    uprightKd: 60,
+    uprightKd: 170,
     maxTorque: 560,
+    // yaw servo: the body tracks the look direction almost 1:1 — a lagging
+    // body under a fast head is uncanny valley
+    yawGain: 300,
+    yawDamp: 30,
+    yawMaxTorque: 400,
 
     // movement: force toward desired velocity. being pushed genuinely displaces you.
-    moveSpeed: 3.7, // m/s target
+    moveSpeed: 3.0, // m/s target (John: standard walk was a little too fast)
     accelGain: 7.5, // (vDesired - v) * mass * gain, clamped below
     maxAccel: 26, // m/s² cap → max force = mass * this
     airControl: 0.25,
@@ -54,8 +61,8 @@ export const CONFIG = {
     // plus floor friction is exactly how you faceplant from jogging
     leanIntoAccel: 0.02, // rad per m/s² (clamped)
     leanMax: 0.09,
-    // idle sway noise so nobody ever stands perfectly still in a club
-    swayAmp: 0.035,
+    // idle sway: barely-there. planted on two feet, not a metronome.
+    swayAmp: 0.008,
     swayHz: 0.6,
   },
 
@@ -85,29 +92,28 @@ export const CONFIG = {
   shove: {
     range: 1.25,
     halfAngleDeg: 55,
-    impulse: 185, // N·s at the target's chest, horizontal — one shove staggers hard, two floor
-    upImpulse: 48, // a bit of lift makes shoves read
+    impulse: 215, // N·s at the target's chest, horizontal
+    upImpulse: 52, // a bit of lift makes shoves read
     selfLunge: 55, // recoil/lunge on the shover
     windupTime: 0.3, // arms-out animation window broadcast to views
-    cooldown: 0.55,
-    // small bonus on top of the physical impulse (which the impact detector
-    // already counts) — shoves are slightly meaner than raw physics
-    balanceDamage: 40,
+    cooldown: 0.6,
+    // bonus on top of the physical impulse: 215+95 clears impulseFall (260),
+    // so a clean shove KNOCKS PEOPLE DOWN (John's ruling). glancing ones stagger.
+    balanceDamage: 95,
   },
 
+  // REPO-style universal grip: a physical reach-ray from the hands. Whatever
+  // solid thing it TOUCHES — person, wall, pillar, stage, prop — you stick to
+  // at the exact contact point and pull on each other. No contact, no grab.
   grab: {
-    reach: 1.15,
-    // soft spring "hand" — no hard joints, so struggling looks organic.
-    // anchored HAND-to-BODY: holder's hand point to the target's near shoulder,
-    // so dragged bodies twist and get hauled by the arm, not towed by the navel.
-    handLocal: { x: 0, y: 0.22, z: 0.4 }, // holder hand in body space
-    targetHeight: 0.3, // attach on target this far above their center
-    springK: 1400,
-    springDamp: 90,
-    restLen: 0.32,
-    breakDist: 2.4,
-    maxForce: 900,
-    holderSpeedMult: 0.62, // dragging is slow
+    reach: 1.1, // hand-ray length. beyond arm's length, hands don't connect
+    handLocal: { x: 0, y: 0.28, z: 0.32 }, // hand origin in body space (chest height)
+    springK: 2600, // stiff spring "grip" at the anchor points
+    springDamp: 120,
+    restLen: 0.22,
+    breakDist: 2.1, // yanked further apart than this = grip torn off
+    maxForce: 1600,
+    holderSpeedMult: 0.62, // hauling a load is slow
     holderKpMult: 0.75, // and destabilizing
   },
 
@@ -115,7 +121,7 @@ export const CONFIG = {
     count: 20,
     radius: 0.27,
     halfHeight: 0.48,
-    mass: 70,
+    mass: 82, // people are HEAVY — bodying through a human should cost you
     uprightKp: 460, // weaker than players — the crowd stumbles more easily
     uprightKd: 48,
     maxTorque: 380,
@@ -128,9 +134,11 @@ export const CONFIG = {
     bounceVel: 0.7, // small vertical pop on their beat
     // wandering: pick a new spot on the floor every so often
     wanderEvery: [7, 18] as const, // s
-    // NPCs shrug you off: gentle constant separation push when overlapping
-    personalSpace: 0.62,
-    separationForce: 260,
+    // soft anti-stack nudge ONLY at near-overlap. weight comes from real
+    // capsule-vs-capsule contact — a big invisible push field made people
+    // glide away before you touched them, which read as weightless.
+    personalSpace: 0.5,
+    separationForce: 120,
   },
 
   music: {
@@ -145,12 +153,16 @@ export const CONFIG = {
   },
 
   camera: {
-    // FIRST PERSON (Peak): eye rides the physics body, so the wobble is felt.
-    eyeLocal: { x: 0, y: 0.56, z: 0.09 }, // eye in body space (just above torso top)
+    // FIRST PERSON, head-stabilized like Peak: the eye FOLLOWS the body's
+    // position but does not inherit its tilt jitter — you see the wobble on
+    // your body and the world, you don't ride a paint shaker. Ragdolled = the
+    // camera goes down with you and rolls fully.
+    eyeHeight: 0.56, // above body center
+    eyeFwd: 0.12, // forward of body center (out of your own torso)
     pitchMin: -1.25,
     pitchMax: 1.15,
     fov: 78,
-    bodyRollBlend: 0.45, // how much of the body's tilt bleeds into the view (1 when down)
+    bodyRollBlend: 0.12, // upright: a hint of lean in the view, not the whole ride
   },
 
   colors: {
