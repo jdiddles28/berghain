@@ -8,6 +8,7 @@ import { lerpSnapshot } from '../sim/types';
 import {
   decodeSnapshot,
   INTERP_DELAY_SNAPS,
+  PROTOCOL_VERSION,
   ROOM_PREFIX,
   SNAP_EVERY,
   type CtlMsg,
@@ -39,14 +40,22 @@ export class ClientSession implements Session {
     this.peer.on('open', () => {
       const ctl = this.peer.connect(hostId, { label: 'ctl', reliable: true });
       ctl.on('open', () => {
-        ctl.send({ t: 'hello' } satisfies CtlMsg);
+        ctl.send({ t: 'hello', v: PROTOCOL_VERSION } satisfies CtlMsg);
       });
       ctl.on('data', (raw) => {
         const msg = raw as CtlMsg;
         if (msg.t === 'init') {
+          if (msg.v !== PROTOCOL_VERSION) {
+            // old host, new client: their build predates the version handshake
+            this.state = 'the HOST is on an old version — they must refresh, then re-host';
+            ctl.close();
+            return;
+          }
           this.localId = msg.playerId;
           this.state = '';
           this.openFast(hostId);
+        } else if (msg.t === 'stale') {
+          this.state = 'game updated! REFRESH this page (Ctrl+R), then rejoin';
         } else if (msg.t === 'full') {
           this.state = 'room is full!';
         } else if (msg.t === 'ev') {
@@ -54,7 +63,7 @@ export class ClientSession implements Session {
         }
       });
       ctl.on('close', () => {
-        this.state = 'disconnected from host';
+        if (!this.state) this.state = 'disconnected from host';
       });
       ctl.on('error', () => {
         this.state = 'connection failed — check the code?';
@@ -86,7 +95,10 @@ export class ClientSession implements Session {
 
   status(): string {
     if (this.state) return this.state;
-    return `In as player ${this.localId.slice(1)}`;
+    // joined but nothing streamed yet: label the black screen instead of
+    // leaving people staring at the void wondering if it broke
+    if (this.buffer.length === 0) return 'joined — streaming the club in…';
+    return `In as player ${this.localId.slice(1)} · b${PROTOCOL_VERSION}`;
   }
 
   drainEvents(): GameEvent[] {
@@ -103,6 +115,7 @@ export class ClientSession implements Session {
         mz: Math.round(localInput.moveZ * 1000) / 1000,
         fy: Math.round(localInput.faceYaw * 1000) / 1000,
         fp: Math.round(localInput.facePitch * 1000) / 1000,
+        sp: localInput.sprint ? 1 : 0,
         h: localInput.hop ? 1 : 0,
         s: localInput.shove ? 1 : 0,
         g: localInput.grab ? 1 : 0,

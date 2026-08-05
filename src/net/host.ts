@@ -15,6 +15,7 @@ import {
 import {
   encodeSnapshot,
   makeRoomCode,
+  PROTOCOL_VERSION,
   ROOM_PREFIX,
   SNAP_EVERY,
   type CtlMsg,
@@ -117,12 +118,25 @@ export class HostSession implements Session {
         lastInputAt: performance.now(),
       };
       this.remotes.set(key, remote);
-      conn.on('open', () => {
-        this.sim.addPlayer(playerId);
-        conn.send({ t: 'init', playerId } satisfies CtlMsg);
+      let admitted = false;
+      // wait for the hello so we can version-check before admitting them —
+      // mismatched builds produce garbage snapshots and a black screen
+      conn.on('data', (raw) => {
+        const msg = raw as CtlMsg;
+        if (msg.t === 'hello' && !admitted) {
+          if (msg.v !== PROTOCOL_VERSION) {
+            conn.send({ t: 'stale' } satisfies CtlMsg);
+            setTimeout(() => conn.close(), 800);
+            this.remotes.delete(key);
+            return;
+          }
+          admitted = true;
+          this.sim.addPlayer(playerId);
+          conn.send({ t: 'init', playerId, v: PROTOCOL_VERSION } satisfies CtlMsg);
+        }
       });
       const drop = () => {
-        this.sim.removePlayer(playerId);
+        if (admitted) this.sim.removePlayer(playerId);
         this.remotes.delete(key);
       };
       conn.on('close', drop);
@@ -142,6 +156,7 @@ export class HostSession implements Session {
             moveZ: msg.mz,
             faceYaw: msg.fy,
             facePitch: msg.fp,
+            sprint: msg.sp === 1,
             hop: false,
             shove: false,
             grab: msg.g === 1,
@@ -157,7 +172,8 @@ export class HostSession implements Session {
   status(): string {
     if (this.roomCode) {
       const n = 1 + this.remotes.size;
-      return `Room ${this.roomCode} · ${n}/3 in`;
+      // build number shown so friends can verify they're on the same version
+      return `Room ${this.roomCode} · ${n}/3 in · b${PROTOCOL_VERSION}`;
     }
     return this.netState;
   }

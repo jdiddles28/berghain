@@ -20,6 +20,7 @@ export interface PlayerInput {
   faceYaw: number;
   /** camera pitch — grabs reach along the actual look direction */
   facePitch: number;
+  sprint: boolean; // held (Shift)
   hop: boolean; // edge-triggered (latched by host)
   shove: boolean; // edge-triggered
   grab: boolean; // held
@@ -30,6 +31,7 @@ export const ZERO_INPUT: PlayerInput = {
   moveZ: 0,
   faceYaw: 0,
   facePitch: 0,
+  sprint: false,
   hop: false,
   shove: false,
   grab: false,
@@ -45,8 +47,8 @@ export interface BodySnap {
   st: BodyState;
   /** world point this body's hands are gripping (any solid), or null */
   gripPoint: Vec3 | null;
-  /** action flag for the view: 0 none · 1 mid-shove · 2 staggered */
-  act: 0 | 1 | 2;
+  /** action flag for the view: 0 none · 1 mid-shove · 2 staggered · 3 reaching (grab attempt) */
+  act: 0 | 1 | 2 | 3;
 }
 
 export interface SimSnapshot {

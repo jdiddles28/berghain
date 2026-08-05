@@ -9,9 +9,16 @@ export const ROOM_PREFIX = 'fslop-bhn-'; // + 4-letter room code = host PeerJS i
 export const SNAP_EVERY = 3; // 60/3 = 20 Hz snapshots
 export const INTERP_DELAY_SNAPS = 2.5;
 
+// Bump whenever the wire format changes. The site auto-deploys, so one player
+// on a stale tab + one freshly refreshed = garbage snapshots and a black
+// screen (Maja/John, 2026-08-05). The handshake catches it with a clear
+// "refresh your page" instead.
+export const PROTOCOL_VERSION = 3;
+
 export type CtlMsg =
-  | { t: 'hello'; name?: string }
-  | { t: 'init'; playerId: string }
+  | { t: 'hello'; v?: number; name?: string }
+  | { t: 'init'; playerId: string; v?: number }
+  | { t: 'stale' } // host is NEWER than you — refresh your page
   | { t: 'full' }
   | { t: 'ev'; evs: GameEvent[] };
 
@@ -24,7 +31,7 @@ export type BodyWire = [
 ];
 
 export type FastMsg =
-  | { t: 'in'; mx: number; mz: number; fy: number; fp: number; h: 0 | 1; s: 0 | 1; g: 0 | 1 }
+  | { t: 'in'; mx: number; mz: number; fy: number; fp: number; sp: 0 | 1; h: 0 | 1; s: 0 | 1; g: 0 | 1 }
   | { t: 'snap'; seq: number; time: number; players: Record<string, BodyWire>; npcs: BodyWire[] };
 
 export function encodeSnapshot(seq: number, snap: SimSnapshot): FastMsg {

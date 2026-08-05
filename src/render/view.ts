@@ -155,11 +155,15 @@ export class View {
     for (const [id, cv] of this.players) {
       const b = frame.players[id];
       if (b) {
-        cv.update(b, dt, frame.beat, { grabTarget: gripTarget(b) });
+        cv.update(b, dt, frame.beat, {
+          grabTarget: gripTarget(b),
+          aimPitch: id === localId ? camPitch : 0,
+        });
         cv.setHeadVisible(id !== localId); // first person: don't render your own head
-        // own arms only appear when they're DOING something (shove/grab) —
-        // idle arms pumping at the bottom of an FP view is just noise
-        cv.setArmsVisible(id !== localId || b.act === 1 || b.gripPoint !== null);
+        // own arms only appear when they're DOING something (shove/reach/grip)
+        cv.setArmsVisible(
+          id !== localId || b.act === 1 || b.act === 3 || b.gripPoint !== null,
+        );
       }
     }
     // crowd
@@ -169,7 +173,8 @@ export class View {
       const cv = new ClubberView(
         colors.crowd[i % colors.crowd.length],
         colors.skin[(i * 2 + 1) % colors.skin.length],
-        0.94 + ((i * 37) % 13) * 0.011, // slight size variety
+        // taller than the player (1.0), with variety — you look UP at the crowd
+        1.06 + ((i * 37) % 13) * 0.012,
       );
       this.npcs.push(cv);
       this.scene.add(cv.group);
@@ -177,6 +182,7 @@ export class View {
     for (let i = 0; i < frame.npcs.length; i++)
       this.npcs[i].update(frame.npcs[i], dt, frame.beat, {
         grabTarget: gripTarget(frame.npcs[i]),
+        dancer: i < CONFIG.crowd.dancers,
       });
 
     // light rig rides the beat

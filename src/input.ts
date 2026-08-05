@@ -83,6 +83,7 @@ export class Input {
       moveZ,
       faceYaw,
       facePitch: this.camPitch,
+      sprint: this.keys.has('ShiftLeft') || this.keys.has('ShiftRight'),
       hop: this.hopQueued,
       shove: this.shoveQueued,
       grab: this.grabHeld,

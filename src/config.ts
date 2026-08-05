@@ -51,6 +51,7 @@ export const CONFIG = {
 
     // movement: force toward desired velocity. being pushed genuinely displaces you.
     moveSpeed: 3.0, // m/s target (John: standard walk was a little too fast)
+    sprintMult: 1.6, // hold SHIFT — 4.8 m/s, and sprint collisions hit harder for free
     accelGain: 7.5, // (vDesired - v) * mass * gain, clamped below
     maxAccel: 26, // m/s² cap → max force = mass * this
     airControl: 0.25,
@@ -120,19 +121,24 @@ export const CONFIG = {
   crowd: {
     count: 20,
     radius: 0.27,
-    halfHeight: 0.48,
+    halfHeight: 0.55, // NPCs are TALLER than the player — you look up at the crowd
     mass: 82, // people are HEAVY — bodying through a human should cost you
     uprightKp: 460, // weaker than players — the crowd stumbles more easily
-    uprightKd: 48,
+    uprightKd: 120, // near-critical like players: walkers stand calm, no metronome sway
     maxTorque: 380,
     moveSpeed: 1.1,
     accelGain: 5,
     maxAccel: 12,
-    // dancing: horizontal impulse bursts on the beat (per-NPC phase offset)
-    danceImpulse: [14, 34] as const, // min..max N·s
-    danceEveryBeats: 2, // each NPC hits every N beats, staggered
-    bounceVel: 0.7, // small vertical pop on their beat
-    // wandering: pick a new spot on the floor every so often
+    // the crowd splits: a pack DANCING mid-floor (genuinely hopping, whole
+    // body, staying roughly in place near each other) and a handful of
+    // non-dancers walking the edges with no bounce in them at all.
+    dancers: 14, // NPC index < dancers ⇒ dancer; the rest are walkers
+    danceZone: { x: 0, z: -0.8, r: 2.9 }, // pack center + radius
+    bounceVel: 1.25, // vertical hop velocity on their beat — actually airborne
+    danceJitter: [6, 16] as const, // small horizontal shuffle N·s — stays in place
+    danceEveryBeats: 2, // each dancer hits every N beats, staggered
+    walkerEdgeBand: 2.2, // walkers roam within this band off the walls
+    // wandering: pick a new spot every so often
     wanderEvery: [7, 18] as const, // s
     // soft anti-stack nudge ONLY at near-overlap. weight comes from real
     // capsule-vs-capsule contact — a big invisible push field made people

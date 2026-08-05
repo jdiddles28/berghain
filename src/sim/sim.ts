@@ -41,6 +41,7 @@ class Character {
   hitAccum = 0; // recent received impulse (decays) — knockdown trigger
   staggerT = 0; // motor control cut after real impacts — makes knockback READ
   shoveT = 0; // arms-out shove animation window (broadcast via act)
+  wantGrab = false; // player holding grab — arms reach out even on a whiff
   hopCd = 0;
   shoveCd = 0;
   /** universal grip: any solid body, stuck at the exact contact point */
@@ -134,7 +135,6 @@ export class Sim {
 
   private spawnCrowd(): void {
     const C = CONFIG.crowd;
-    const R = CONFIG.room;
     const cfg: CharCfg = {
       radius: C.radius,
       halfHeight: C.halfHeight,
@@ -147,13 +147,34 @@ export class Sim {
       maxAccel: C.maxAccel,
     };
     for (let i = 0; i < C.count; i++) {
-      // scatter across the floor, clear of the stage
-      const x = (Math.random() - 0.5) * (R.w - 2.5);
-      const z = (Math.random() - 0.5) * (R.d - 2.5);
-      const npc = new Character(this.world, cfg, x, Math.max(z, -R.d / 2 + 3), false, i % 4);
+      // dancers spawn packed in the dance zone, walkers around the edges
+      const spot = i < C.dancers ? this.danceSpot() : this.edgeSpot();
+      const npc = new Character(this.world, cfg, spot.x, spot.z, false, i % C.danceEveryBeats);
       npc.wanderT = randRange(...C.wanderEvery);
       this.npcs.push(npc);
     }
+  }
+
+  private danceSpot(): { x: number; z: number } {
+    const Z = CONFIG.crowd.danceZone;
+    const a = Math.random() * Math.PI * 2;
+    const r = Math.sqrt(Math.random()) * Z.r;
+    return { x: Z.x + Math.cos(a) * r, z: Z.z + Math.sin(a) * r };
+  }
+
+  private edgeSpot(): { x: number; z: number } {
+    const R = CONFIG.room;
+    const band = CONFIG.crowd.walkerEdgeBand;
+    // pick a point in the border band (off the dancefloor, away from the stage)
+    for (let tries = 0; tries < 20; tries++) {
+      const x = (Math.random() - 0.5) * (R.w - 1.6);
+      const z = (Math.random() - 0.5) * (R.d - 1.6);
+      const nearWallX = Math.abs(x) > R.w / 2 - band;
+      const nearWallZ = Math.abs(z) > R.d / 2 - band;
+      const onStage = z < -R.d / 2 + 2.6;
+      if ((nearWallX || nearWallZ) && !onStage) return { x, z };
+    }
+    return { x: R.w / 2 - 1.2, z: 0 };
   }
 
   addPlayer(id: string): void {
@@ -259,7 +280,9 @@ export class Sim {
     const grounded = this.isGrounded(ch);
     const wantX = input.moveX;
     const wantZ = input.moveZ;
-    const speedMult = ch.grip ? CONFIG.grab.holderSpeedMult : 1;
+    const speedMult =
+      (ch.grip ? CONFIG.grab.holderSpeedMult : 1) *
+      (input.sprint && ch.isPlayer && !ch.grip ? CONFIG.body.sprintMult : 1);
     const targetVx = wantX * ch.cfg.moveSpeed * speedMult;
     const targetVz = wantZ * ch.cfg.moveSpeed * speedMult;
     const v = ch.body.linvel();
@@ -291,8 +314,10 @@ export class Sim {
       ch.shoveT = CONFIG.shove.windupTime;
     }
 
-    // grab (players only — hold to grip, release to drop)
+    // grab (players only — hold to grip, release to drop). arms reach out for
+    // as long as grab is held, even when there's nothing to catch.
     if (ch.isPlayer) {
+      ch.wantGrab = input.grab;
       if (input.grab && !ch.grip) this.tryGrab(ch, input);
       else if (!input.grab && ch.grip) this.releaseGrip(ch);
     }
@@ -537,37 +562,46 @@ export class Sim {
 
   private updateNpcBrain(npc: Character, dt: number): void {
     const C = CONFIG.crowd;
-    // beat clock: continuous beats since t=0
+    const isDancer = this.npcs.indexOf(npc) < C.dancers;
     const beatLen = 60 / CONFIG.music.bpm;
     const beatNum = Math.floor(this.time / beatLen);
     const prevBeatNum = Math.floor((this.time - dt) / beatLen);
 
     const input: PlayerInput = { ...ZERO_INPUT };
     if (npc.state === 0) {
-      // dance bounce on this NPC's beat slot
-      if (beatNum !== prevBeatNum && beatNum % C.danceEveryBeats === npc.dancePhase % C.danceEveryBeats) {
-        const ang = Math.random() * Math.PI * 2;
-        const mag = randRange(...C.danceImpulse);
-        npc.body.applyImpulse(
-          { x: Math.cos(ang) * mag, y: C.bounceVel * npc.cfg.mass * 0.12, z: Math.sin(ang) * mag },
-          true,
-        );
-      }
-      // wander: drift toward home; re-pick home occasionally
-      npc.wanderT -= dt;
-      if (npc.wanderT <= 0) {
-        npc.wanderT = randRange(...C.wanderEvery);
-        const R = CONFIG.room;
-        npc.home = {
-          x: (Math.random() - 0.5) * (R.w - 2.5),
-          z: Math.max((Math.random() - 0.5) * (R.d - 2.5), -R.d / 2 + 2.6),
-        };
+      if (isDancer) {
+        // GENUINE full-body hop on their beat slot (grounded only, so energy
+        // can't stack) + a small shuffle. They dance in place, in the pack.
+        if (
+          beatNum !== prevBeatNum &&
+          beatNum % C.danceEveryBeats === npc.dancePhase % C.danceEveryBeats &&
+          this.isGrounded(npc)
+        ) {
+          const v = npc.body.linvel();
+          npc.body.setLinvel({ x: v.x, y: Math.max(v.y, C.bounceVel), z: v.z }, true);
+          const ang = Math.random() * Math.PI * 2;
+          const mag = randRange(...C.danceJitter);
+          npc.body.applyImpulse({ x: Math.cos(ang) * mag, y: 0, z: Math.sin(ang) * mag }, true);
+        }
+        npc.wanderT -= dt;
+        if (npc.wanderT <= 0) {
+          npc.wanderT = randRange(...C.wanderEvery);
+          npc.home = this.danceSpot();
+        }
+      } else {
+        // walkers: no bounce in them at all, just slow laps around the edges
+        npc.wanderT -= dt;
+        if (npc.wanderT <= 0) {
+          npc.wanderT = randRange(...C.wanderEvery);
+          npc.home = this.edgeSpot();
+        }
       }
       const p = npc.pos();
       const hx = npc.home.x - p.x;
       const hz = npc.home.z - p.z;
       const hd = Math.hypot(hx, hz);
-      if (hd > 0.8) {
+      // dancers only shuffle back when they've drifted out of the pack
+      if (hd > (isDancer ? 1.3 : 0.8)) {
         input.moveX = hx / hd;
         input.moveZ = hz / hd;
       }
@@ -623,7 +657,14 @@ export class Sim {
       vel: { x: v.x, y: v.y, z: v.z },
       st: ch.state,
       gripPoint: this.gripAnchorWorld(ch),
-      act: ch.shoveT > 0 ? 1 : ch.staggerT > 0 ? 2 : 0,
+      act:
+        ch.shoveT > 0
+          ? 1
+          : ch.wantGrab && !ch.grip
+            ? 3
+            : ch.staggerT > 0
+              ? 2
+              : 0,
     };
   }
 
