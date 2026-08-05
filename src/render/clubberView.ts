@@ -46,25 +46,6 @@ export class ClubberView {
     this.head = new THREE.Mesh(new THREE.IcosahedronGeometry(0.155 * scale, 0), skinMat);
     this.head.position.y = 0.62 * scale;
 
-    // front-of-shirt panel (+z = body facing) — a lighter chest patch so you
-    // can read which way anyone faces across the dark room. Lambert, not
-    // glowing: it's clothing, not a beacon. (Googly eyes tried and rejected —
-    // John: "the eyes are dumb".)
-    const frontColor = new THREE.Color(outfit).lerp(new THREE.Color(0xffffff), 0.35);
-    const frontMat = new THREE.MeshLambertMaterial({
-      color: frontColor,
-      flatShading: true,
-      side: THREE.DoubleSide,
-    });
-    // a curved shell hugging the chest, not a box — boxes poked glowing edge
-    // slivers out at every angle and read as gear strapped to the body
-    const front = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.25 * scale, 0.25 * scale, 0.42 * scale, 6, 1, true, -0.7, 1.4),
-      frontMat,
-    );
-    front.position.y = 0.08 * scale;
-    this.torso.add(front);
-
     const armGeo = new THREE.CapsuleGeometry(0.06 * scale, 0.42 * scale, 1, 5);
     const legGeo = new THREE.CapsuleGeometry(0.075 * scale, 0.4 * scale, 1, 5);
 
