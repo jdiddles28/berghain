@@ -46,20 +46,24 @@ export class ClubberView {
     this.head = new THREE.Mesh(new THREE.IcosahedronGeometry(0.155 * scale, 0), skinMat);
     this.head.position.y = 0.62 * scale;
 
-    // googly eyes on the front of the head (+z = body facing). MeshBasic so
-    // they stay bright in the dark — the whites are what reads across the club.
-    const whiteMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
-    const pupilMat = new THREE.MeshBasicMaterial({ color: 0x0a0a0a });
-    const eyeGeo = new THREE.SphereGeometry(0.05 * scale, 10, 8);
-    const pupilGeo = new THREE.SphereGeometry(0.026 * scale, 8, 6);
-    for (const side of [-1, 1]) {
-      const eye = new THREE.Mesh(eyeGeo, whiteMat);
-      eye.position.set(side * 0.064 * scale, 0.02 * scale, 0.126 * scale);
-      const pupil = new THREE.Mesh(pupilGeo, pupilMat);
-      pupil.position.set(0, -0.01 * scale, 0.039 * scale); // pupil sits low — googly
-      eye.add(pupil);
-      this.head.add(eye);
-    }
+    // front-of-shirt panel (+z = body facing) — a lighter chest patch so you
+    // can read which way anyone faces across the dark room. Lambert, not
+    // glowing: it's clothing, not a beacon. (Googly eyes tried and rejected —
+    // John: "the eyes are dumb".)
+    const frontColor = new THREE.Color(outfit).lerp(new THREE.Color(0xffffff), 0.35);
+    const frontMat = new THREE.MeshLambertMaterial({
+      color: frontColor,
+      flatShading: true,
+      side: THREE.DoubleSide,
+    });
+    // a curved shell hugging the chest, not a box — boxes poked glowing edge
+    // slivers out at every angle and read as gear strapped to the body
+    const front = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.25 * scale, 0.25 * scale, 0.42 * scale, 6, 1, true, -0.7, 1.4),
+      frontMat,
+    );
+    front.position.y = 0.08 * scale;
+    this.torso.add(front);
 
     const armGeo = new THREE.CapsuleGeometry(0.06 * scale, 0.42 * scale, 1, 5);
     const legGeo = new THREE.CapsuleGeometry(0.075 * scale, 0.4 * scale, 1, 5);
