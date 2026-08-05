@@ -16,12 +16,21 @@ export interface PlayerInput {
   /** camera-relative desired move direction, unit or zero, in world XZ */
   moveX: number;
   moveZ: number;
+  /** world yaw the body should face (first person: where the camera looks) */
+  faceYaw: number;
   hop: boolean; // edge-triggered (latched by host)
   shove: boolean; // edge-triggered
   grab: boolean; // held
 }
 
-export const ZERO_INPUT: PlayerInput = { moveX: 0, moveZ: 0, hop: false, shove: false, grab: false };
+export const ZERO_INPUT: PlayerInput = {
+  moveX: 0,
+  moveZ: 0,
+  faceYaw: 0,
+  hop: false,
+  shove: false,
+  grab: false,
+};
 
 // 0 upright · 1 down (ragdolled) · 2 getting up
 export type BodyState = 0 | 1 | 2;
@@ -33,6 +42,8 @@ export interface BodySnap {
   st: BodyState;
   /** who this body is gripping: player index 0..2, or 100+npcIndex, or -1 */
   grip: number;
+  /** action flag for the view: 0 none · 1 mid-shove · 2 staggered */
+  act: 0 | 1 | 2;
 }
 
 export interface SimSnapshot {
@@ -78,6 +89,7 @@ function lerpBody(a: BodySnap, b: BodySnap, t: number): BodySnap {
     vel: lerpV(a.vel, b.vel, t),
     st: b.st,
     grip: b.grip,
+    act: b.act,
   };
 }
 

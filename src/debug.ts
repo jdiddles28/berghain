@@ -4,6 +4,8 @@ import type { HostSession } from './net/host';
 
 export function installDebug(host: HostSession): void {
   const g = {
+    /** raw sim access for staging playtest situations from the console */
+    sim: host.sim,
     getState: () => host.sim.snapshot(),
     /** teleport the LOCAL player (host). __game.teleport(x, z) — y is derived. */
     teleport: (x: number, z: number) => {

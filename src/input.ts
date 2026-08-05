@@ -7,7 +7,7 @@ import type { PlayerInput } from './sim/types';
 
 export class Input {
   camYaw = 0;
-  camPitch = -0.06; // near-level: the crowd should tower around you, not spread below you
+  camPitch = 0; // first person: level gaze by default
   private keys = new Set<string>();
   private shoveQueued = false;
   private hopQueued = false;
@@ -44,10 +44,10 @@ export class Input {
     });
     window.addEventListener('mousemove', (e) => {
       if (!this.locked) return;
-      this.camYaw -= e.movementX * 0.0026;
+      this.camYaw -= e.movementX * 0.0024;
       this.camPitch = Math.max(
         CONFIG.camera.pitchMin,
-        Math.min(CONFIG.camera.pitchMax, this.camPitch - e.movementY * 0.0024),
+        Math.min(CONFIG.camera.pitchMax, this.camPitch - e.movementY * 0.0022),
       );
     });
   }
@@ -73,9 +73,15 @@ export class Input {
       moveX = ix * cos - iz * sin;
       moveZ = -ix * sin - iz * cos;
     }
+    // first person: the body faces where the camera looks.
+    // camera sits at -Z of the view direction, so facing = camYaw + π.
+    let faceYaw = this.camYaw + Math.PI;
+    while (faceYaw > Math.PI) faceYaw -= Math.PI * 2;
+    while (faceYaw < -Math.PI) faceYaw += Math.PI * 2;
     const out: PlayerInput = {
       moveX,
       moveZ,
+      faceYaw,
       hop: this.hopQueued,
       shove: this.shoveQueued,
       grab: this.grabHeld,

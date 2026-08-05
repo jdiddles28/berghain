@@ -101,6 +101,7 @@ export class ClientSession implements Session {
         t: 'in',
         mx: Math.round(localInput.moveX * 1000) / 1000,
         mz: Math.round(localInput.moveZ * 1000) / 1000,
+        fy: Math.round(localInput.faceYaw * 1000) / 1000,
         h: localInput.hop ? 1 : 0,
         s: localInput.shove ? 1 : 0,
         g: localInput.grab ? 1 : 0,

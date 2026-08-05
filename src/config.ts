@@ -62,8 +62,14 @@ export const CONFIG = {
   // knockdown/get-up — the comedy threshold
   balance: {
     tiltFallDeg: 58, // past this tilt you're gone
-    impulseFall: 210, // N·s of accumulated hit in a short window → gone even if upright
+    impulseFall: 260, // N·s of accumulated hit in a short window → gone even if upright
     impulseWindow: 0.35, // s
+    // stagger: real impacts cut the victim's motor control so knockback READS.
+    // without this the movement controller cancels a shove within 3 frames.
+    staggerPerImpulse: 1 / 300, // s of stagger per N·s of impact
+    staggerMax: 0.9, // s
+    staggerMoveMult: 0.12, // movement force while staggered
+    staggerSpringMult: 0.4, // upright spring while staggered — they flail
     // impacts are detected as sudden HORIZONTAL velocity change (mass × Δv).
     // vertical is excluded so hopping/landing never floors you.
     // one clean shove ≈ 150+40 = 90% of threshold: two quick hits floor you.
@@ -77,11 +83,12 @@ export const CONFIG = {
   },
 
   shove: {
-    range: 1.15,
+    range: 1.25,
     halfAngleDeg: 55,
-    impulse: 150, // N·s at the target's chest, horizontal
-    upImpulse: 38, // a bit of lift makes shoves read
+    impulse: 185, // N·s at the target's chest, horizontal — one shove staggers hard, two floor
+    upImpulse: 48, // a bit of lift makes shoves read
     selfLunge: 55, // recoil/lunge on the shover
+    windupTime: 0.3, // arms-out animation window broadcast to views
     cooldown: 0.55,
     // small bonus on top of the physical impulse (which the impact detector
     // already counts) — shoves are slightly meaner than raw physics
@@ -89,11 +96,15 @@ export const CONFIG = {
   },
 
   grab: {
-    reach: 1.05,
-    // soft spring "hand" — no hard joints, so struggling looks organic
+    reach: 1.15,
+    // soft spring "hand" — no hard joints, so struggling looks organic.
+    // anchored HAND-to-BODY: holder's hand point to the target's near shoulder,
+    // so dragged bodies twist and get hauled by the arm, not towed by the navel.
+    handLocal: { x: 0, y: 0.22, z: 0.4 }, // holder hand in body space
+    targetHeight: 0.3, // attach on target this far above their center
     springK: 1400,
     springDamp: 90,
-    restLen: 0.5,
+    restLen: 0.32,
     breakDist: 2.4,
     maxForce: 900,
     holderSpeedMult: 0.62, // dragging is slow
@@ -134,14 +145,12 @@ export const CONFIG = {
   },
 
   camera: {
-    dist: 3.4,
-    height: 1.05, // sits behind the shoulder, not overhead
-
-    pitchMin: -0.9,
-    pitchMax: 0.7,
-    fov: 68,
-    // camera-relative WASD (Peak scheme): body turns to face movement direction
-    faceTurnRate: 11, // rad/s the visual/physical yaw servo turns at
+    // FIRST PERSON (Peak): eye rides the physics body, so the wobble is felt.
+    eyeLocal: { x: 0, y: 0.56, z: 0.09 }, // eye in body space (just above torso top)
+    pitchMin: -1.25,
+    pitchMax: 1.15,
+    fov: 78,
+    bodyRollBlend: 0.45, // how much of the body's tilt bleeds into the view (1 when down)
   },
 
   colors: {

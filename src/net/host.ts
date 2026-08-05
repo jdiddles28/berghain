@@ -140,6 +140,7 @@ export class HostSession implements Session {
           remote.input = {
             moveX: msg.mx,
             moveZ: msg.mz,
+            faceYaw: msg.fy,
             hop: false,
             shove: false,
             grab: msg.g === 1,

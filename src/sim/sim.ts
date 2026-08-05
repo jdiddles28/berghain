@@ -39,6 +39,8 @@ class Character {
   state: BodyState = 0;
   stateT = 0; // time in current state
   hitAccum = 0; // recent received impulse (decays) — knockdown trigger
+  staggerT = 0; // motor control cut after real impacts — makes knockback READ
+  shoveT = 0; // arms-out shove animation window (broadcast via act)
   hopCd = 0;
   shoveCd = 0;
   grip: Character | null = null;
@@ -220,6 +222,8 @@ export class Sim {
     ch.stateT += dt;
     ch.hopCd = Math.max(0, ch.hopCd - dt);
     ch.shoveCd = Math.max(0, ch.shoveCd - dt);
+    ch.shoveT = Math.max(0, ch.shoveT - dt);
+    ch.staggerT = Math.max(0, ch.staggerT - dt);
     ch.hitAccum = Math.max(0, ch.hitAccum - (CONFIG.balance.impulseFall / CONFIG.balance.impulseWindow) * dt);
 
     if (ch.state === 1) {
@@ -239,13 +243,17 @@ export class Sim {
       ch.stateT = 0;
     }
 
-    // upright spring (ramped during get-up so the rise is a wobble, not a snap)
+    // upright spring (ramped during get-up so the rise is a wobble, not a snap;
+    // cut while staggered so hits produce a visible flail)
+    const staggered = ch.staggerT > 0;
     const springScale =
       (ch.state === 2 ? Math.min(1, ch.stateT / CONFIG.balance.getupRamp) : 1) *
-      (ch.grip ? CONFIG.grab.holderKpMult : 1);
+      (ch.grip ? CONFIG.grab.holderKpMult : 1) *
+      (staggered ? CONFIG.balance.staggerSpringMult : 1);
     this.applyUprightSpring(ch, springScale, input, dt);
 
-    // movement force toward desired velocity
+    // movement force toward desired velocity — staggered bodies lose their
+    // motor control, which is what lets a shove actually SHOVE
     const grounded = this.isGrounded(ch);
     const wantX = input.moveX;
     const wantZ = input.moveZ;
@@ -255,7 +263,11 @@ export class Sim {
     const v = ch.body.linvel();
     let fx = (targetVx - v.x) * ch.cfg.mass * ch.cfg.accelGain;
     let fz = (targetVz - v.z) * ch.cfg.mass * ch.cfg.accelGain;
-    const maxF = ch.cfg.mass * ch.cfg.maxAccel * (grounded ? 1 : CONFIG.body.airControl);
+    const maxF =
+      ch.cfg.mass *
+      ch.cfg.maxAccel *
+      (grounded ? 1 : CONFIG.body.airControl) *
+      (staggered ? CONFIG.balance.staggerMoveMult : 1);
     const fmag = Math.hypot(fx, fz);
     if (fmag > maxF) {
       fx = (fx / fmag) * maxF;
@@ -264,16 +276,17 @@ export class Sim {
     ch.body.addForce({ x: fx, y: 0, z: fz }, true);
 
     // hop
-    if (input.hop && grounded && ch.hopCd <= 0) {
+    if (input.hop && grounded && ch.hopCd <= 0 && !staggered) {
       const lv = ch.body.linvel();
       ch.body.setLinvel({ x: lv.x, y: CONFIG.body.hopVel, z: lv.z }, true);
       ch.hopCd = CONFIG.body.hopCooldown;
     }
 
     // shove
-    if (input.shove && ch.shoveCd <= 0) {
+    if (input.shove && ch.shoveCd <= 0 && !staggered) {
       this.doShove(ch);
       ch.shoveCd = CONFIG.shove.cooldown;
+      ch.shoveT = CONFIG.shove.windupTime;
     }
 
     // grab (players only — hold to grip, release to drop)
@@ -322,10 +335,13 @@ export class Sim {
     }
     ch.body.addTorque({ x: tx, y: ty, z: tz }, true);
 
-    // yaw servo: turn to face movement (or keep current heading when idle)
-    const want = Math.hypot(input.moveX, input.moveZ);
-    if (want > 0.1) {
-      const targetYaw = Math.atan2(input.moveX, input.moveZ);
+    // yaw servo. players (first person): always face where the camera looks.
+    // NPCs: face their movement direction when walking.
+    let targetYaw: number | null = null;
+    if (ch.isPlayer) targetYaw = input.faceYaw;
+    else if (Math.hypot(input.moveX, input.moveZ) > 0.1)
+      targetYaw = Math.atan2(input.moveX, input.moveZ);
+    if (targetYaw !== null) {
       const currYaw = yawOf(rot);
       let dyaw = targetYaw - currYaw;
       while (dyaw > Math.PI) dyaw -= Math.PI * 2;
@@ -344,6 +360,10 @@ export class Sim {
     ch.prevVz = v.z;
     if (ch.state !== 1 && imp > CONFIG.balance.impactMin) {
       ch.hitAccum += imp;
+      ch.staggerT = Math.max(
+        ch.staggerT,
+        Math.min(CONFIG.balance.staggerMax, imp * CONFIG.balance.staggerPerImpulse),
+      );
       if (imp > CONFIG.balance.impactEvent) {
         const p = ch.pos();
         this.emit({ t: 'impact', ...vec(p), mag: Math.min(1, imp / 420) });
@@ -447,30 +467,60 @@ export class Sim {
     this.emit({ t: 'grab', ...vec(ch.pos()), on: false });
   }
 
-  /** soft spring "hand" between holder and held — struggle stays organic, no joints */
+  /** soft spring HAND-to-BODY between holder and held — struggle stays organic,
+   *  no joints. Forces act at the hand/shoulder points so dragged bodies twist
+   *  and get hauled by the arm rather than towed by the navel. */
   private updateGrips(): void {
+    const G = CONFIG.grab;
     for (const ch of this.allChars()) {
       if (!ch.grip) continue;
-      const a = ch.pos();
-      const b = ch.grip.pos();
-      const dx = b.x - a.x;
-      const dy = b.y - a.y;
-      const dz = b.z - a.z;
+      const hand = this.grabHandPoint(ch);
+      const attach = this.grabAttachPoint(ch, ch.grip);
+      const dx = attach.x - hand.x;
+      const dy = attach.y - hand.y;
+      const dz = attach.z - hand.z;
       const dist = Math.hypot(dx, dy, dz);
-      if (dist > CONFIG.grab.breakDist || ch.state === 1) {
+      if (dist > G.breakDist || ch.state === 1) {
         this.releaseGrip(ch);
         continue;
       }
-      const dir = { x: dx / dist, y: dy / dist, z: dz / dist };
+      const dir = { x: dx / (dist || 1), y: dy / (dist || 1), z: dz / (dist || 1) };
       const va = ch.body.linvel();
       const vb = ch.grip.body.linvel();
       const relV = (vb.x - va.x) * dir.x + (vb.y - va.y) * dir.y + (vb.z - va.z) * dir.z;
-      let f = (dist - CONFIG.grab.restLen) * CONFIG.grab.springK + relV * CONFIG.grab.springDamp;
-      f = clampN(f, CONFIG.grab.maxForce);
-      // pull held toward holder, and holder toward held (they feel the weight)
-      ch.grip.body.addForce({ x: -dir.x * f, y: -dir.y * f * 0.3, z: -dir.z * f }, true);
-      ch.body.addForce({ x: dir.x * f * 0.55, y: 0, z: dir.z * f * 0.55 }, true);
+      let f = (dist - G.restLen) * G.springK + relV * G.springDamp;
+      f = clampN(f, G.maxForce);
+      // pull held (at their shoulder) toward the holder's hand, and the holder
+      // toward the load — dragging genuinely costs you balance and speed
+      ch.grip.body.addForceAtPoint(
+        { x: -dir.x * f, y: -dir.y * f * 0.3, z: -dir.z * f },
+        attach,
+        true,
+      );
+      ch.body.addForceAtPoint({ x: dir.x * f * 0.55, y: 0, z: dir.z * f * 0.55 }, hand, true);
     }
+  }
+
+  /** holder's hand in world space */
+  grabHandPoint(ch: Character): { x: number; y: number; z: number } {
+    const p = ch.pos();
+    const h = rotateVec(ch.body.rotation(), CONFIG.grab.handLocal);
+    return { x: p.x + h.x, y: p.y + h.y, z: p.z + h.z };
+  }
+
+  /** attach point on the grabbed body: their near shoulder (side facing holder) */
+  grabAttachPoint(holder: Character, held: Character): { x: number; y: number; z: number } {
+    const hp = holder.pos();
+    const tp = held.pos();
+    const dx = hp.x - tp.x;
+    const dz = hp.z - tp.z;
+    const d = Math.hypot(dx, dz) || 1;
+    const r = held.cfg.radius;
+    return {
+      x: tp.x + (dx / d) * r,
+      y: tp.y + CONFIG.grab.targetHeight,
+      z: tp.z + (dz / d) * r,
+    };
   }
 
   // ---------- crowd ----------
@@ -570,6 +620,7 @@ export class Sim {
       vel: { x: v.x, y: v.y, z: v.z },
       st: ch.state,
       grip: ch.gripIdx,
+      act: ch.shoveT > 0 ? 1 : ch.staggerT > 0 ? 2 : 0,
     };
   }
 

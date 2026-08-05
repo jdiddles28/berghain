@@ -150,9 +150,27 @@ export class View {
     for (const id of Object.keys(frame.players)) {
       this.ensurePlayer(id, slot++);
     }
+    const playerIds = Object.keys(frame.players);
+    const gripTarget = (b: { grip: number; pos: { x: number; y: number; z: number } }) => {
+      if (b.grip < 0) return null;
+      const t = b.grip >= 100 ? frame.npcs[b.grip - 100] : frame.players[playerIds[b.grip]];
+      if (!t) return null;
+      // near-shoulder attach point, mirroring the sim's grabAttachPoint
+      const dx = b.pos.x - t.pos.x;
+      const dz = b.pos.z - t.pos.z;
+      const d = Math.hypot(dx, dz) || 1;
+      return new THREE.Vector3(
+        t.pos.x + (dx / d) * 0.27,
+        t.pos.y + 0.3,
+        t.pos.z + (dz / d) * 0.27,
+      );
+    };
     for (const [id, cv] of this.players) {
       const b = frame.players[id];
-      if (b) cv.update(b, dt, frame.beat);
+      if (b) {
+        cv.update(b, dt, frame.beat, { grabTarget: gripTarget(b) });
+        cv.setHeadVisible(id !== localId); // first person: don't render your own head
+      }
     }
     // crowd
     const colors = CONFIG.colors;
@@ -166,7 +184,8 @@ export class View {
       this.npcs.push(cv);
       this.scene.add(cv.group);
     }
-    for (let i = 0; i < frame.npcs.length; i++) this.npcs[i].update(frame.npcs[i], dt, frame.beat);
+    for (let i = 0; i < frame.npcs.length; i++)
+      this.npcs[i].update(frame.npcs[i], dt, frame.beat, { grabTarget: gripTarget(frame.npcs[i]) });
 
     // light rig rides the beat
     const beatFrac = frame.beat - Math.floor(frame.beat);
@@ -180,24 +199,27 @@ export class View {
     const phrase = frame.beat % 16;
     this.strobe.intensity = phrase < 0.5 || (phrase > 1 && phrase < 1.3) ? 55 : 0;
 
-    // camera: orbit the local player, clamped inside the room
+    // FIRST-PERSON camera: eye rides the physics body, so every stumble, shove
+    // and ragdoll is FELT. Mouse owns yaw/pitch; the body's tilt bleeds in as
+    // view roll (fully when you're on the floor).
     const me = frame.players[localId];
     if (me) {
       const C = CONFIG.camera;
-      const target = new THREE.Vector3(me.pos.x, me.pos.y + 0.5, me.pos.z);
-      const off = new THREE.Vector3(
-        Math.sin(camYaw) * Math.cos(camPitch),
-        -Math.sin(camPitch),
-        Math.cos(camYaw) * Math.cos(camPitch),
-      ).multiplyScalar(C.dist);
-      const pos = target.clone().add(off);
-      pos.y = Math.max(0.25, pos.y + C.height - 0.5);
-      const R = CONFIG.room;
-      pos.x = THREE.MathUtils.clamp(pos.x, -R.w / 2 + 0.4, R.w / 2 - 0.4);
-      pos.z = THREE.MathUtils.clamp(pos.z, -R.d / 2 + 0.4, R.d / 2 - 0.4);
-      pos.y = Math.min(pos.y, R.wallH - 0.3);
-      this.camera.position.copy(pos);
-      this.camera.lookAt(target);
+      const bodyQ = new THREE.Quaternion(me.rot.x, me.rot.y, me.rot.z, me.rot.w);
+      const eye = new THREE.Vector3(C.eyeLocal.x, C.eyeLocal.y, C.eyeLocal.z)
+        .applyQuaternion(bodyQ)
+        .add(new THREE.Vector3(me.pos.x, me.pos.y, me.pos.z));
+      this.camera.position.copy(eye);
+
+      this.camera.quaternion.setFromEuler(new THREE.Euler(camPitch, camYaw, 0, 'YXZ'));
+      // roll from body tilt: project the body's up onto the camera's right axis
+      const bodyUp = new THREE.Vector3(0, 1, 0).applyQuaternion(bodyQ);
+      const camRight = new THREE.Vector3(1, 0, 0).applyQuaternion(this.camera.quaternion);
+      const rollAmt = Math.asin(THREE.MathUtils.clamp(bodyUp.dot(camRight), -1, 1));
+      const blend = me.st === 1 ? 1 : C.bodyRollBlend;
+      this.camera.quaternion.multiply(
+        new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), rollAmt * blend),
+      );
     }
 
     this.renderer.render(this.scene, this.camera);

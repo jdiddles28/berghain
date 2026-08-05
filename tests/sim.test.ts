@@ -74,19 +74,28 @@ describe('wobbly body physics', () => {
     sim.addPlayer('p1');
     const a = sim.players.get('p0')!;
     const b = sim.players.get('p1')!;
-    // place b directly in front of a (a faces +z at spawn)
-    const ap = a.body.translation();
-    b.body.setTranslation({ x: ap.x, y: ap.y, z: ap.z + 0.8 }, true);
+    // mid-floor with open space in the +z knockback path (not against a wall)
+    a.body.setTranslation({ x: 0, y: 0.85, z: -1.2 }, true);
+    b.body.setTranslation({ x: 0, y: 0.85, z: -0.4 }, true);
     run(sim, 10); // settle
     const before = sim.snapshot().players['p1'].vel;
     const inputs = new Map<string, PlayerInput>();
     inputs.set('p0', { ...ZERO_INPUT, shove: true });
     inputs.set('p1', { ...ZERO_INPUT });
     sim.step(inputs);
-    const after = sim.snapshot().players['p1'].vel;
+    const snap = sim.snapshot();
+    const after = snap.players['p1'].vel;
     const dv = Math.hypot(after.x - before.x, after.z - before.z);
     expect(dv).toBeGreaterThan(1.0);
     expect(sim.lastEvents.some((e) => e.t === 'shove' && e.hit)).toBe(true);
+    // the shover shows the arms-out pose; the victim is staggered (motor
+    // control cut, so the knockback actually carries them)
+    expect(snap.players['p0'].act).toBe(1);
+    expect(snap.players['p1'].act).toBe(2);
+    const start = snap.players['p1'].pos;
+    run(sim, 30);
+    const carried = sim.snapshot().players['p1'].pos;
+    expect(Math.hypot(carried.x - start.x, carried.z - start.z)).toBeGreaterThan(0.45);
   });
 
   it('crowd NPCs exist, stay in the room, and mostly stay standing', () => {

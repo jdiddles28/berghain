@@ -1,9 +1,18 @@
 // One clubber: faceted low-poly body driven by the sim's rigid body transform,
-// with cheap procedural limbs (walk swing, dance bob, ragdoll dangle).
-// Flat shading everywhere — papercraft, not Roblox.
+// with cheap procedural limbs (walk swing, dance bob, shove thrust, stagger
+// flail, ragdoll dangle, grab-reach). Flat shading — papercraft, not Roblox.
 
 import * as THREE from 'three';
 import type { BodySnap } from '../sim/types';
+
+const DOWN_ARM = new THREE.Vector3(0, -1, 0);
+const tmpV = new THREE.Vector3();
+const tmpQ = new THREE.Quaternion();
+
+export interface ClubberFrameOpts {
+  /** world point the holder's hands should reach toward (they're gripping) */
+  grabTarget?: THREE.Vector3 | null;
+}
 
 export class ClubberView {
   group = new THREE.Group();
@@ -15,6 +24,7 @@ export class ClubberView {
   private legR: THREE.Object3D;
   private walkPhase = 0;
   private dancePhase = Math.random() * Math.PI * 2;
+  private shoulderY: number;
 
   constructor(outfit: number, skin: number, scale = 1) {
     const outfitMat = new THREE.MeshLambertMaterial({ color: outfit, flatShading: true });
@@ -27,8 +37,9 @@ export class ClubberView {
     const armGeo = new THREE.CapsuleGeometry(0.06 * scale, 0.42 * scale, 1, 5);
     const legGeo = new THREE.CapsuleGeometry(0.075 * scale, 0.4 * scale, 1, 5);
 
-    this.armL = this.limb(armGeo, outfitMat, -0.31 * scale, 0.32 * scale);
-    this.armR = this.limb(armGeo, outfitMat, 0.31 * scale, 0.32 * scale);
+    this.shoulderY = 0.32 * scale;
+    this.armL = this.limb(armGeo, outfitMat, -0.31 * scale, this.shoulderY);
+    this.armR = this.limb(armGeo, outfitMat, 0.31 * scale, this.shoulderY);
     this.legL = this.limb(legGeo, outfitMat, -0.13 * scale, -0.38 * scale);
     this.legR = this.limb(legGeo, outfitMat, 0.13 * scale, -0.38 * scale);
 
@@ -45,12 +56,33 @@ export class ClubberView {
     return pivot;
   }
 
-  update(b: BodySnap, dt: number, beat: number): void {
+  setHeadVisible(v: boolean): void {
+    this.head.visible = v;
+  }
+
+  update(b: BodySnap, dt: number, beat: number, opts?: ClubberFrameOpts): void {
     this.group.position.set(b.pos.x, b.pos.y, b.pos.z);
     this.group.quaternion.set(b.rot.x, b.rot.y, b.rot.z, b.rot.w);
 
     const speed = Math.hypot(b.vel.x, b.vel.z);
     this.walkPhase += speed * dt * 5.2;
+
+    // grabbing: both arms reach for the thing being gripped — hands-on drag
+    if (opts?.grabTarget && b.st !== 1) {
+      this.group.updateMatrixWorld();
+      this.aimArm(this.armL, opts.grabTarget);
+      this.aimArm(this.armR, opts.grabTarget);
+      this.legsWalk(speed);
+      return;
+    }
+
+    if (b.act === 1) {
+      // mid-shove: both arms thrust straight forward, palms out
+      this.armL.rotation.set(-1.62, 0, 0.06);
+      this.armR.rotation.set(-1.62, 0, -0.06);
+      this.legsWalk(speed);
+      return;
+    }
 
     if (b.st === 1) {
       // down: limbs dangle loose
@@ -62,24 +94,45 @@ export class ClubberView {
       return;
     }
 
+    if (b.act === 2) {
+      // staggered: arms windmill for balance
+      const w = Math.sin(beat * Math.PI * 7 + this.dancePhase);
+      this.armL.rotation.set(-0.7 + w * 0.9, 0, 0.85);
+      this.armR.rotation.set(-0.7 - w * 0.9, 0, -0.85);
+      this.legsWalk(speed);
+      return;
+    }
+
     if (speed > 0.4) {
-      // walk swing
       const s = Math.sin(this.walkPhase);
       this.armL.rotation.set(s * 0.7, 0, 0.12);
       this.armR.rotation.set(-s * 0.7, 0, -0.12);
-      this.legL.rotation.set(-s * 0.8, 0, 0.03);
-      this.legR.rotation.set(s * 0.8, 0, -0.03);
+      this.legsWalk(speed);
     } else {
-      // idle groove: subtle bob + arm pump synced to the beat — arms mostly
-      // DOWN (raised splayed arms read penguin, not raver)
+      // idle groove: subtle bob + arm pump synced to the beat
       const g = Math.sin((beat + this.dancePhase) * Math.PI * 2);
-      const h = Math.sin((beat + this.dancePhase) * Math.PI); // half-time
+      const h = Math.sin((beat + this.dancePhase) * Math.PI);
       this.armL.rotation.set(-0.12 + g * 0.16, 0, 0.16 + h * 0.05);
       this.armR.rotation.set(-0.12 - g * 0.16, 0, -0.16 - h * 0.05);
       this.legL.rotation.set(g * 0.06, 0, 0.05);
       this.legR.rotation.set(-g * 0.06, 0, -0.05);
       this.torso.position.y = Math.abs(g) * -0.035;
-      this.head.rotation.x = g * 0.06; // nod, don't headbang sideways
+      this.head.rotation.x = g * 0.06;
     }
+  }
+
+  private legsWalk(speed: number): void {
+    const s = speed > 0.4 ? Math.sin(this.walkPhase) : 0;
+    this.legL.rotation.set(-s * 0.8, 0, 0.03);
+    this.legR.rotation.set(s * 0.8, 0, -0.03);
+  }
+
+  /** rotate an arm pivot so the arm (which hangs along -Y) points at a world target */
+  private aimArm(arm: THREE.Object3D, worldTarget: THREE.Vector3): void {
+    tmpV.copy(worldTarget);
+    this.group.worldToLocal(tmpV);
+    tmpV.sub(arm.position).normalize();
+    tmpQ.setFromUnitVectors(DOWN_ARM, tmpV);
+    arm.quaternion.copy(tmpQ);
   }
 }
