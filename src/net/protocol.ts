@@ -14,8 +14,9 @@ export const INTERP_DELAY_SNAPS = 2.5;
 // screen (Maja/John, 2026-08-05). The handshake catches it with a clear
 // "refresh your page" instead.
 // Also fine to bump when a fix simply MUST reach everyone (b4: crowd balance +
-// the pointer-lock fallback) — the handshake doubles as a build-freshness gate.
-export const PROTOCOL_VERSION = 4;
+// the pointer-lock fallback; b5: walker lean + own-body clipping) — the
+// handshake doubles as a build-freshness gate.
+export const PROTOCOL_VERSION = 5;
 
 export type CtlMsg =
   | { t: 'hello'; v?: number; name?: string }

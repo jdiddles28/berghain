@@ -76,6 +76,14 @@ export class ClubberView {
     this.armR.visible = v;
   }
 
+  /** first person: the camera lives inside this capsule — looking down showed
+   *  the INSIDE of your own torso. Local player renders arms only. */
+  setBodyVisible(v: boolean): void {
+    this.torso.visible = v;
+    this.legL.visible = v;
+    this.legR.visible = v;
+  }
+
   update(b: BodySnap, dt: number, beat: number, opts?: ClubberFrameOpts): void {
     this.group.position.set(b.pos.x, b.pos.y, b.pos.z);
     this.group.quaternion.set(b.rot.x, b.rot.y, b.rot.z, b.rot.w);

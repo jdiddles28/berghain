@@ -130,8 +130,12 @@ export const CONFIG = {
     // faceplant (John playtest: "walking at a 45 degree angle, flopping around").
     // Stumbles still happen — via stagger and the impulse accumulator, not via
     // a spring too weak to stand a body up.
-    uprightKp: 560,
-    uprightKd: 190, // near critical for this kp/inertia — no metronome sway
+    // kp must beat the capsule's toppling leverage (m·g·halfHeight ≈ 442) by
+    // the same MARGIN players enjoy, or every walk settles into a visible
+    // 10-15° "falling forward" lean (John playtest). Ratio here ≈ 1.8, like
+    // the player's. Falls still come from the impulse accumulator, not tilt.
+    uprightKp: 800,
+    uprightKd: 225, // near critical for this kp/inertia — no metronome sway
     maxTorque: 600,
     moveSpeed: 1.1,
     accelGain: 5,

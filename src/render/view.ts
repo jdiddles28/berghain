@@ -160,6 +160,7 @@ export class View {
           aimPitch: id === localId ? camPitch : 0,
         });
         cv.setHeadVisible(id !== localId); // first person: don't render your own head
+        cv.setBodyVisible(id !== localId); // ...or torso/legs — the camera is inside them
         // own arms only appear when they're DOING something (shove/reach/grip)
         cv.setArmsVisible(
           id !== localId || b.act === 1 || b.act === 3 || b.gripPoint !== null,
