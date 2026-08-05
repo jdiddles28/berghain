@@ -16,28 +16,67 @@ export const INTERP_DELAY_SNAPS = 2.5;
 // Also fine to bump when a fix simply MUST reach everyone (b4: crowd balance +
 // the pointer-lock fallback; b5: walker lean + own-body clipping) — the
 // handshake doubles as a build-freshness gate.
-export const PROTOCOL_VERSION = 7;
+export const PROTOCOL_VERSION = 8;
 
-// ICE config for every Peer: STUN discovers a direct path between machines;
-// TURN relays traffic when strict NATs (school/office wifi) refuse direct
-// paths — that failure looks like "host sees you join, you sit at connecting
-// forever". The public relay is best-effort: if it's dead, ICE ignores it.
-export const PEER_OPTS = {
-  config: {
-    iceServers: [
-      { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
-      {
-        urls: [
-          'turn:openrelay.metered.ca:80',
-          'turn:openrelay.metered.ca:443',
-          'turn:openrelay.metered.ca:443?transport=tcp',
-        ],
-        username: 'openrelayproject',
-        credential: 'openrelayproject',
-      },
-    ],
-  },
-};
+// ICE: STUN discovers a direct path between machines; TURN *relays* traffic
+// when hard NATs (phone-hotspot carrier CGNAT, strict office wifi) refuse
+// direct paths — that failure looks like "host sees you join, you sit at
+// connecting forever".
+//
+// Every free no-account TURN relay is DEAD (probed live 2026-08-05: openrelay,
+// staticauth.openrelay, expressturn — zero relay candidates from all of them;
+// they all require accounts now). When John creates the free metered.ca
+// Open Relay account (20 GB/mo), paste its credentials into TURN below and
+// hotspot/strict-NAT pairs will connect through the relay.
+const TURN: RTCIceServer | null = null; // ← {urls: [...], username, credential}
+
+/** testing hatch: paste relay credentials into localStorage key "bhn-turn"
+ *  (same JSON shape) to try a relay on the DEPLOYED game without a redeploy */
+function storedTurn(): RTCIceServer | null {
+  try {
+    const raw = localStorage.getItem('bhn-turn');
+    return raw ? (JSON.parse(raw) as RTCIceServer) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function turnServer(): RTCIceServer | null {
+  return TURN ?? storedTurn();
+}
+
+export function peerOpts(): { config: RTCConfiguration } {
+  const iceServers: RTCIceServer[] = [
+    { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
+  ];
+  const turn = turnServer();
+  if (turn) iceServers.push(turn);
+  return { config: { iceServers } };
+}
+
+/** can we actually obtain a relayed path right now? (used by the join-failure
+ *  doctor to tell "no relay configured/working" apart from "relay fine,
+ *  something else is wrong") */
+export function relayAvailable(): Promise<boolean> {
+  const turn = turnServer();
+  if (!turn) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    const pc = new RTCPeerConnection({ iceServers: [turn], iceTransportPolicy: 'relay' });
+    let done = false;
+    const finish = (ok: boolean) => {
+      if (done) return;
+      done = true;
+      pc.close();
+      resolve(ok);
+    };
+    pc.onicecandidate = (e) => {
+      if (e.candidate && e.candidate.candidate.includes('relay')) finish(true);
+    };
+    pc.createDataChannel('probe');
+    pc.createOffer().then((o) => pc.setLocalDescription(o));
+    setTimeout(() => finish(false), 6000);
+  });
+}
 
 export type CtlMsg =
   | { t: 'hello'; v?: number; name?: string }

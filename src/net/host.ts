@@ -15,7 +15,7 @@ import {
 import {
   encodeSnapshot,
   makeRoomCode,
-  PEER_OPTS,
+  peerOpts,
   PROTOCOL_VERSION,
   ROOM_PREFIX,
   SNAP_EVERY,
@@ -79,7 +79,7 @@ export class HostSession implements Session {
       return;
     }
     const code = makeRoomCode();
-    const peer = new Peer(ROOM_PREFIX + code, PEER_OPTS);
+    const peer = new Peer(ROOM_PREFIX + code, peerOpts());
     peer.on('open', () => {
       this.peer = peer;
       this.roomCode = code;

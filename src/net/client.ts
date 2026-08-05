@@ -8,10 +8,12 @@ import { lerpSnapshot } from '../sim/types';
 import {
   decodeSnapshot,
   INTERP_DELAY_SNAPS,
-  PEER_OPTS,
+  peerOpts,
   PROTOCOL_VERSION,
+  relayAvailable,
   ROOM_PREFIX,
   SNAP_EVERY,
+  turnServer,
   type CtlMsg,
   type FastMsg,
 } from './protocol';
@@ -40,20 +42,30 @@ export class ClientSession implements Session {
 
   constructor(code: string) {
     const hostId = ROOM_PREFIX + code.toUpperCase();
-    this.peer = new Peer(PEER_OPTS);
+    this.peer = new Peer(peerOpts());
     this.peer.on('open', () => {
       this.state = `joining ${code.toUpperCase()} — opening a connection…`;
       const ctl = this.peer.connect(hostId, { label: 'ctl', reliable: true });
       // the classic silent failure: signaling reaches the host (their count
-      // goes up) but strict NATs block the actual data path, and the joiner
-      // stares at "connecting" forever. Name the problem + the workarounds.
-      setTimeout(() => {
-        if (!this.settled) {
+      // goes up) but hard NATs block the actual data path, and the joiner
+      // stares at "connecting" forever. Diagnose instead of guessing.
+      setTimeout(async () => {
+        if (this.settled) return;
+        if (!turnServer()) {
+          // no relay configured at all — these two networks simply need one
           this.state =
-            'found the room, but the connection won\'t open —\n' +
-            'a strict network (school/office wifi) is probably blocking it.\n' +
-            'try: phone hotspot, or swap who hosts. then re-join.';
+            "these two networks can't connect DIRECTLY (phone hotspots\n" +
+            'and strict wifi need a relay) — and no relay is set up yet.\n' +
+            'tell John: the game needs its relay credentials. meanwhile,\n' +
+            'try swapping who hosts — blocks are often one-directional.';
+          return;
         }
+        this.state = "connection won't open — checking the relay…";
+        const relayOk = await relayAvailable();
+        if (this.settled) return;
+        this.state = relayOk
+          ? "relay is up but the host is still unreachable — likely the\nhost's network. swap who hosts, or the host re-hosts a new room."
+          : 'the relay is configured but NOT reachable — its credentials\nmay have expired. tell John. (swapping who hosts may still work.)';
       }, 15000);
       ctl.on('open', () => {
         this.state = 'connected — checking version…';
