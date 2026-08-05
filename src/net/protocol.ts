@@ -16,7 +16,28 @@ export const INTERP_DELAY_SNAPS = 2.5;
 // Also fine to bump when a fix simply MUST reach everyone (b4: crowd balance +
 // the pointer-lock fallback; b5: walker lean + own-body clipping) — the
 // handshake doubles as a build-freshness gate.
-export const PROTOCOL_VERSION = 6;
+export const PROTOCOL_VERSION = 7;
+
+// ICE config for every Peer: STUN discovers a direct path between machines;
+// TURN relays traffic when strict NATs (school/office wifi) refuse direct
+// paths — that failure looks like "host sees you join, you sit at connecting
+// forever". The public relay is best-effort: if it's dead, ICE ignores it.
+export const PEER_OPTS = {
+  config: {
+    iceServers: [
+      { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
+      {
+        urls: [
+          'turn:openrelay.metered.ca:80',
+          'turn:openrelay.metered.ca:443',
+          'turn:openrelay.metered.ca:443?transport=tcp',
+        ],
+        username: 'openrelayproject',
+        credential: 'openrelayproject',
+      },
+    ],
+  },
+};
 
 export type CtlMsg =
   | { t: 'hello'; v?: number; name?: string }

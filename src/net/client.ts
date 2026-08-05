@@ -8,6 +8,7 @@ import { lerpSnapshot } from '../sim/types';
 import {
   decodeSnapshot,
   INTERP_DELAY_SNAPS,
+  PEER_OPTS,
   PROTOCOL_VERSION,
   ROOM_PREFIX,
   SNAP_EVERY,
@@ -28,6 +29,9 @@ export class ClientSession implements Session {
   private peer: Peer;
   private fast: DataConnection | null = null;
   private state = 'connecting…';
+  /** a terminal state (joined/refused/error) has been reached — the
+   *  can't-open-a-path timeout must not overwrite it */
+  private settled = false;
 
   private buffer: BufferedSnap[] = [];
   private latestIndex = -1;
@@ -36,15 +40,29 @@ export class ClientSession implements Session {
 
   constructor(code: string) {
     const hostId = ROOM_PREFIX + code.toUpperCase();
-    this.peer = new Peer();
+    this.peer = new Peer(PEER_OPTS);
     this.peer.on('open', () => {
+      this.state = `joining ${code.toUpperCase()} — opening a connection…`;
       const ctl = this.peer.connect(hostId, { label: 'ctl', reliable: true });
+      // the classic silent failure: signaling reaches the host (their count
+      // goes up) but strict NATs block the actual data path, and the joiner
+      // stares at "connecting" forever. Name the problem + the workarounds.
+      setTimeout(() => {
+        if (!this.settled) {
+          this.state =
+            'found the room, but the connection won\'t open —\n' +
+            'a strict network (school/office wifi) is probably blocking it.\n' +
+            'try: phone hotspot, or swap who hosts. then re-join.';
+        }
+      }, 15000);
       ctl.on('open', () => {
+        this.state = 'connected — checking version…';
         ctl.send({ t: 'hello', v: PROTOCOL_VERSION } satisfies CtlMsg);
       });
       ctl.on('data', (raw) => {
         const msg = raw as CtlMsg;
         if (msg.t === 'init') {
+          this.settled = true;
           if (msg.v !== PROTOCOL_VERSION) {
             // old host, new client: their build predates the version handshake
             this.state = 'the HOST is on an old version — they must refresh, then re-host';
@@ -55,8 +73,10 @@ export class ClientSession implements Session {
           this.state = '';
           this.openFast(hostId);
         } else if (msg.t === 'stale') {
+          this.settled = true;
           this.state = 'game updated! REFRESH this page (Ctrl+R), then rejoin';
         } else if (msg.t === 'full') {
+          this.settled = true;
           this.state = 'room is full!';
         } else if (msg.t === 'ev') {
           this.pendingEvents.push(...msg.evs);
@@ -66,10 +86,12 @@ export class ClientSession implements Session {
         if (!this.state) this.state = 'disconnected from host';
       });
       ctl.on('error', () => {
+        this.settled = true;
         this.state = 'connection failed — check the code?';
       });
     });
     this.peer.on('error', (err: Error & { type?: string }) => {
+      this.settled = true;
       if (err.type === 'peer-unavailable') this.state = `no room "${code.toUpperCase()}" found`;
       else this.state = `network error (${err.type ?? 'unknown'})`;
     });

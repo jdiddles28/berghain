@@ -15,6 +15,7 @@ import {
 import {
   encodeSnapshot,
   makeRoomCode,
+  PEER_OPTS,
   PROTOCOL_VERSION,
   ROOM_PREFIX,
   SNAP_EVERY,
@@ -33,6 +34,7 @@ interface Remote {
   hopLatch: boolean;
   shoveLatch: boolean;
   lastInputAt: number;
+  admitted: boolean; // hello received + version matched — actually IN the game
 }
 
 export class HostSession implements Session {
@@ -77,7 +79,7 @@ export class HostSession implements Session {
       return;
     }
     const code = makeRoomCode();
-    const peer = new Peer(ROOM_PREFIX + code);
+    const peer = new Peer(ROOM_PREFIX + code, PEER_OPTS);
     peer.on('open', () => {
       this.peer = peer;
       this.roomCode = code;
@@ -100,7 +102,9 @@ export class HostSession implements Session {
   private onConnection(conn: DataConnection): void {
     const key = conn.peer;
     if (conn.label === 'ctl') {
-      if (this.remotes.size >= MAX_PLAYERS - 1) {
+      let admittedCount = 0;
+      for (const r of this.remotes.values()) if (r.admitted) admittedCount++;
+      if (admittedCount >= MAX_PLAYERS - 1) {
         conn.on('open', () => {
           conn.send({ t: 'full' } satisfies CtlMsg);
           setTimeout(() => conn.close(), 500);
@@ -116,27 +120,39 @@ export class HostSession implements Session {
         hopLatch: false,
         shoveLatch: false,
         lastInputAt: performance.now(),
+        admitted: false,
       };
       this.remotes.set(key, remote);
-      let admitted = false;
+      // reap zombies: a connection that never manages to open + hello (strict
+      // NAT, dead tab) must not squat a player slot forever
+      setTimeout(() => {
+        if (this.remotes.get(key) === remote && !remote.admitted) {
+          this.remotes.delete(key);
+          try {
+            conn.close();
+          } catch {
+            /* already dead */
+          }
+        }
+      }, 15000);
       // wait for the hello so we can version-check before admitting them —
       // mismatched builds produce garbage snapshots and a black screen
       conn.on('data', (raw) => {
         const msg = raw as CtlMsg;
-        if (msg.t === 'hello' && !admitted) {
+        if (msg.t === 'hello' && !remote.admitted) {
           if (msg.v !== PROTOCOL_VERSION) {
             conn.send({ t: 'stale' } satisfies CtlMsg);
             setTimeout(() => conn.close(), 800);
             this.remotes.delete(key);
             return;
           }
-          admitted = true;
+          remote.admitted = true;
           this.sim.addPlayer(playerId);
           conn.send({ t: 'init', playerId, v: PROTOCOL_VERSION } satisfies CtlMsg);
         }
       });
       const drop = () => {
-        if (admitted) this.sim.removePlayer(playerId);
+        if (remote.admitted) this.sim.removePlayer(playerId);
         this.remotes.delete(key);
       };
       conn.on('close', drop);
@@ -171,9 +187,14 @@ export class HostSession implements Session {
 
   status(): string {
     if (this.roomCode) {
-      const n = 1 + this.remotes.size;
-      // build number shown so friends can verify they're on the same version
-      return `Room ${this.roomCode} · ${n}/3 in · b${PROTOCOL_VERSION}`;
+      // count only ADMITTED players — half-open connections used to bump the
+      // count to 2/3 while the joiner sat on "connecting" forever, telling
+      // the host a join worked when it hadn't
+      let n = 1;
+      let pending = 0;
+      for (const r of this.remotes.values()) r.admitted ? n++ : pending++;
+      const pend = pending > 0 ? ` (+${pending} connecting)` : '';
+      return `Room ${this.roomCode} · ${n}/3 in${pend} · b${PROTOCOL_VERSION}`;
     }
     return this.netState;
   }
