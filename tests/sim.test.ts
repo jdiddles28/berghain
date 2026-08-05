@@ -96,6 +96,11 @@ describe('wobbly body physics', () => {
     const dv = Math.hypot(after.x - before.x, after.z - before.z);
     expect(dv).toBeGreaterThan(1.0);
     expect(sim.lastEvents.some((e) => e.t === 'shove' && e.hit)).toBe(true);
+    // the impulse lands on the CHEST, so the victim topples AWAY from the
+    // shover: push along +z ⇒ positive angular velocity about x (head tips +z).
+    // COM shoves left fall direction to contact chaos (John: "they may fall
+    // towards you when you shove them").
+    expect(sim.players.get('p1')!.body.angvel().x).toBeGreaterThan(0.8);
     // the shover shows the arms-out pose; a CLEAN shove knocks the victim down
     expect(snap.players['p0'].act).toBe(1);
     expect(snap.players['p1'].st).toBe(1);

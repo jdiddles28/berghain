@@ -96,4 +96,25 @@ describe('crowd stays on its feet', () => {
     const p0 = d.body.translation();
     expect(Math.hypot(p0.x - cx, p0.z - cz)).toBeLessThan(CONFIG.crowd.packRadius + 1.0);
   });
+
+  it('the DJ mans the booth and returns to it when displaced', () => {
+    const sim = new Sim();
+    sim.addPlayer('p0');
+    const dj = sim.npcs[CONFIG.crowd.count - 1];
+    const booth = CONFIG.room.dj;
+    stepN(sim, 60 * 8);
+    let p = dj.body.translation();
+    expect(dj.isDJ).toBe(true);
+    expect(Math.hypot(p.x - booth.x, p.z - booth.z)).toBeLessThan(0.8); // at his post
+    expect(p.y).toBeGreaterThan(CONFIG.room.stage.h + 0.5); // ON the stage
+    expect(dj.state).toBe(0);
+    // drag him to mid-floor: he should walk back and hop up the stage lip
+    dj.body.setTranslation({ x: 1.5, y: 1.0, z: 1.5 }, true);
+    dj.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
+    stepN(sim, 60 * 18);
+    p = dj.body.translation();
+    expect(Math.hypot(p.x - booth.x, p.z - booth.z)).toBeLessThan(1.0);
+    expect(p.y).toBeGreaterThan(CONFIG.room.stage.h + 0.5);
+    expect(dj.state).toBe(0);
+  });
 });

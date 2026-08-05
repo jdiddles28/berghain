@@ -21,6 +21,8 @@ export interface ClubberFrameOpts {
   grabTarget?: THREE.Vector3 | null;
   /** this NPC is in the dancing pack (adds a light arm groove, no bob) */
   dancer?: boolean;
+  /** the DJ: hands work the decks, one goes up at the top of each phrase */
+  mixing?: boolean;
   /** local player's camera pitch so FP arm thrust/reach follows the look */
   aimPitch?: number;
 }
@@ -143,6 +145,21 @@ export class ClubberView {
 
     // standing: PLANTED. dancers get a light arm groove (their bounce is real
     // physics); everyone else keeps still arms and a still torso.
+    if (opts?.mixing) {
+      // forearms over the board nudging the decks on the beat; a hand goes up
+      // for the last two beats of every 16-beat phrase. torso stays planted.
+      const nudge = Math.sin(beat * Math.PI * 2) * 0.1;
+      if (beat % 16 >= 14) {
+        this.armR.rotation.set(-2.75, 0, -0.25); // hand in the air
+        this.armL.rotation.set(-1.05 - nudge, 0, 0.18);
+      } else {
+        this.armL.rotation.set(-1.05 + nudge, 0, 0.18);
+        this.armR.rotation.set(-1.05 - nudge, 0, -0.18);
+      }
+      this.legL.rotation.set(0, 0, 0.04);
+      this.legR.rotation.set(0, 0, -0.04);
+      return;
+    }
     if (opts?.dancer) {
       const g = Math.sin((beat + this.dancePhase) * Math.PI * 2);
       this.armL.rotation.set(-0.25 + g * 0.22, 0, 0.2);

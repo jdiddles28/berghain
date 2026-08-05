@@ -16,7 +16,7 @@ export const INTERP_DELAY_SNAPS = 2.5;
 // Also fine to bump when a fix simply MUST reach everyone (b4: crowd balance +
 // the pointer-lock fallback; b5: walker lean + own-body clipping) — the
 // handshake doubles as a build-freshness gate.
-export const PROTOCOL_VERSION = 5;
+export const PROTOCOL_VERSION = 6;
 
 export type CtlMsg =
   | { t: 'hello'; v?: number; name?: string }

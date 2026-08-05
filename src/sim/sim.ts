@@ -53,6 +53,7 @@ class Character {
   home: { x: number; z: number };
   wanderT = 0;
   dancePhase = 0; // which beat this NPC hits
+  isDJ = false; // mans the booth: no wandering, no hopping, walks back if moved
 
   constructor(
     world: RAPIER.World,
@@ -136,6 +137,12 @@ export class Sim {
       RAPIER.ColliderDesc.cuboid(s.w / 2, s.h / 2, s.d / 2),
       fixed(s.x, s.h / 2, s.z),
     );
+    // DJ board on the stage — solid like everything else: grabbable, vaultable
+    const dj = R.dj;
+    this.world.createCollider(
+      RAPIER.ColliderDesc.cuboid(dj.boardW / 2, dj.boardH / 2, dj.boardD / 2),
+      fixed(dj.x, s.h + dj.boardH / 2, dj.boardZ),
+    );
   }
 
   private spawnCrowd(): void {
@@ -152,10 +159,22 @@ export class Sim {
       maxAccel: C.maxAccel,
     };
     for (let i = 0; i < C.count; i++) {
-      // dancers spawn packed in the dance zone, walkers around the edges
-      const spot = i < C.dancers ? this.danceSpot() : this.edgeSpot();
+      // dancers spawn packed in the dance zone, walkers around the edges,
+      // and the LAST index is the DJ behind the board
+      const isDJ = i === C.count - 1;
+      const spot = isDJ
+        ? { x: CONFIG.room.dj.x, z: CONFIG.room.dj.z }
+        : i < C.dancers
+          ? this.danceSpot()
+          : this.edgeSpot();
       const npc = new Character(this.world, cfg, spot.x, spot.z, false, i % C.danceEveryBeats);
       npc.wanderT = randRange(...C.wanderEvery);
+      if (isDJ) {
+        npc.isDJ = true;
+        // the booth is up on the stage
+        const p = npc.body.translation();
+        npc.body.setTranslation({ x: p.x, y: p.y + CONFIG.room.stage.h, z: p.z }, true);
+      }
       this.npcs.push(npc);
     }
   }
@@ -384,6 +403,7 @@ export class Sim {
     if (ch.isPlayer) targetYaw = input.faceYaw;
     else if (Math.hypot(input.moveX, input.moveZ) > 0.1)
       targetYaw = Math.atan2(input.moveX, input.moveZ);
+    else if (ch.isDJ) targetYaw = 0; // behind the decks, facing the floor (+z)
     if (targetYaw !== null) {
       const gain = ch.isPlayer ? CONFIG.body.yawGain : 60;
       const damp = ch.isPlayer ? CONFIG.body.yawDamp : 12;
@@ -460,12 +480,18 @@ export class Sim {
       if (dist > CONFIG.shove.range || dist < 1e-4) continue;
       const dot = (dx / dist) * fxz.x + (dz / dist) * fxz.z;
       if (dot < cosHalf) continue;
-      other.body.applyImpulse(
+      // hands land on the CHEST, above the COM — that offset is what tips the
+      // victim away from you. A center-of-mass impulse has no rotation, so
+      // fall direction was contact roulette (victims crumpled toward the
+      // shover often enough that John called it out).
+      const chest = rotateVec(other.body.rotation(), { x: 0, y: CONFIG.shove.chestLift, z: 0 });
+      other.body.applyImpulseAtPoint(
         {
           x: (dx / dist) * CONFIG.shove.impulse,
           y: CONFIG.shove.upImpulse,
           z: (dz / dist) * CONFIG.shove.impulse,
         },
+        { x: op.x + chest.x, y: op.y + chest.y, z: op.z + chest.z },
         true,
       );
       other.hitAccum += CONFIG.shove.balanceDamage;
@@ -615,7 +641,34 @@ export class Sim {
     const input: PlayerInput = { ...ZERO_INPUT };
     if (npc.state === 0) {
       const p = npc.pos();
-      if (isDancer) {
+      if (npc.isDJ) {
+        // mans the booth. shove him anywhere and he trudges back to his decks.
+        const hx = npc.home.x - p.x;
+        const hz = npc.home.z - p.z;
+        const hd = Math.hypot(hx, hz);
+        if (hd > 0.45) {
+          // navigate around the board: until he's behind its plane, aim past
+          // its nearer END (near-zero friction slides him along the front if
+          // he cuts the corner). Straight-lining walks him into the furniture.
+          const B = CONFIG.room.dj;
+          let tx = hx;
+          let tz = hz;
+          if (p.z > B.boardZ - 0.45) {
+            const side = p.x >= 0 ? 1 : -1;
+            tx = side * (B.boardW / 2 + 0.5) - p.x;
+            tz = B.boardZ - 0.75 - p.z;
+          }
+          const td = Math.hypot(tx, tz) || 1;
+          input.moveX = tx / td;
+          input.moveZ = tz / td;
+          // blocked (stage lip, bodies in the way) → little hop to get over
+          const v = npc.body.linvel();
+          if (npc.hopCd <= 0 && Math.hypot(v.x, v.z) < 0.35 && this.isGrounded(npc)) {
+            npc.body.setLinvel({ x: v.x, y: CONFIG.body.hopVel, z: v.z }, true);
+            npc.hopCd = CONFIG.body.hopCooldown * 2;
+          }
+        }
+      } else if (isDancer) {
         // GENUINE full-body hop on their beat slot (grounded only, so energy
         // can't stack) + a small shuffle. They dance in place, in the pack.
         if (

@@ -120,6 +120,33 @@ export class View {
       cone.position.set(s.x + sx, s.h + 1.4, s.z + 0.22);
       this.scene.add(cone);
     }
+
+    // DJ booth: board table between the speaker stacks, decks + mixer on top
+    const dj = R.dj;
+    const boothMat = new THREE.MeshLambertMaterial({ color: 0x141318, flatShading: true });
+    const board = new THREE.Mesh(new THREE.BoxGeometry(dj.boardW, dj.boardH, dj.boardD), boothMat);
+    board.position.set(dj.x, s.h + dj.boardH / 2, dj.boardZ);
+    this.scene.add(board);
+    const top = new THREE.Mesh(
+      new THREE.BoxGeometry(dj.boardW + 0.12, 0.05, dj.boardD + 0.12),
+      new THREE.MeshLambertMaterial({ color: 0x232228, flatShading: true }),
+    );
+    top.position.set(dj.x, s.h + dj.boardH + 0.025, dj.boardZ);
+    this.scene.add(top);
+    const deckMat = new THREE.MeshLambertMaterial({ color: 0x0a0a0d, flatShading: true });
+    const ledMat = new THREE.MeshBasicMaterial({ color: 0xff5522 });
+    for (const ox of [-0.55, 0, 0.55]) {
+      const deck = new THREE.Mesh(
+        new THREE.BoxGeometry(ox === 0 ? 0.3 : 0.42, 0.06, 0.34),
+        deckMat,
+      );
+      deck.position.set(dj.x + ox, s.h + dj.boardH + 0.08, dj.boardZ);
+      this.scene.add(deck);
+      // dim LED strips so the gear reads as gear in the dark
+      const led = new THREE.Mesh(new THREE.BoxGeometry(ox === 0 ? 0.18 : 0.28, 0.012, 0.02), ledMat);
+      led.position.set(dj.x + ox, s.h + dj.boardH + 0.115, dj.boardZ + 0.14);
+      this.scene.add(led);
+    }
   }
 
   ensurePlayer(id: string, slot: number): void {
@@ -184,6 +211,7 @@ export class View {
       this.npcs[i].update(frame.npcs[i], dt, frame.beat, {
         grabTarget: gripTarget(frame.npcs[i]),
         dancer: i < CONFIG.crowd.dancers,
+        mixing: i === CONFIG.crowd.count - 1, // the DJ works the decks
       });
 
     // light rig rides the beat

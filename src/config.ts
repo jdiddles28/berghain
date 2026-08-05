@@ -19,6 +19,9 @@ export const CONFIG = {
     ],
     // low stage/plinth along the -z wall (speaker wall). climbable with a hop.
     stage: { x: 0, z: -4.9, w: 7, d: 2.2, h: 0.45 },
+    // DJ booth ON the stage: the board is a solid table (grabbable, climbable
+    // like everything), the DJ stands behind it facing the floor
+    dj: { x: 0, z: -4.95, boardZ: -4.15, boardW: 1.7, boardD: 0.5, boardH: 0.8 },
   },
 
   // Peak-style wobbly body: a DYNAMIC capsule held upright by a limited spring.
@@ -94,12 +97,17 @@ export const CONFIG = {
   shove: {
     range: 1.25,
     halfAngleDeg: 55,
-    impulse: 215, // N·s at the target's chest, horizontal
-    upImpulse: 52, // a bit of lift makes shoves read
+    impulse: 270, // N·s through the chest — a committed two-hand shove, SNAPPY
+    upImpulse: 30, // slight lift for readability. a push, not a toss.
+    // hands land this far UP the victim's body axis from their center. An
+    // impulse above the COM is what makes people topple AWAY from you —
+    // center-of-mass shoves produced no rotation, so fall direction was left
+    // to contact chaos and victims sometimes crumpled TOWARD the shover.
+    chestLift: 0.26,
     selfLunge: 55, // recoil/lunge on the shover
     windupTime: 0.3, // arms-out animation window broadcast to views
     cooldown: 0.6,
-    // bonus on top of the physical impulse: 215+95 clears impulseFall (260),
+    // bonus on top of the physical impulse: 270+95 clears impulseFall (260),
     // so a clean shove KNOCKS PEOPLE DOWN (John's ruling). glancing ones stagger.
     balanceDamage: 95,
   },
@@ -120,7 +128,7 @@ export const CONFIG = {
   },
 
   crowd: {
-    count: 32,
+    count: 33, // 22 dancers + 10 walkers + the DJ (always the LAST index)
     radius: 0.27,
     halfHeight: 0.55, // NPCs are TALLER than the player — you look up at the crowd
     mass: 82, // people are HEAVY — bodying through a human should cost you
