@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>BERGHAIN — Build 1</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🪩</text></svg>" />
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        overflow: hidden;
+        background: #050508;
+        height: 100%;
+        font-family: 'Segoe UI', system-ui, sans-serif;
+        color: #cfd2dc;
+      }
+      #app {
+        position: fixed;
+        inset: 0;
+      }
+      canvas {
+        display: block;
+      }
+      #hud {
+        position: fixed;
+        left: 10px;
+        bottom: 8px;
+        font-size: 13px;
+        opacity: 0.75;
+        pointer-events: none;
+        text-shadow: 0 1px 2px #000;
+        white-space: pre;
+      }
+      #menu {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 14px;
+        background: radial-gradient(ellipse at 50% 120%, #14101f 0%, #050508 70%);
+      }
+      #menu h1 {
+        font-size: 42px;
+        letter-spacing: 14px;
+        font-weight: 300;
+        color: #e8e8ee;
+        margin: 0 0 4px;
+      }
+      #menu .sub {
+        font-size: 12px;
+        letter-spacing: 3px;
+        opacity: 0.5;
+        margin-bottom: 22px;
+      }
+      #menu button {
+        font-size: 16px;
+        letter-spacing: 2px;
+        padding: 10px 34px;
+        background: #17151f;
+        color: #dfe0e8;
+        border: 1px solid #3a3650;
+        cursor: pointer;
+      }
+      #menu button:hover {
+        background: #241f33;
+      }
+      #menu input {
+        font-size: 16px;
+        letter-spacing: 6px;
+        padding: 9px 12px;
+        width: 110px;
+        text-align: center;
+        text-transform: uppercase;
+        background: #0d0c12;
+        color: #dfe0e8;
+        border: 1px solid #3a3650;
+        outline: none;
+      }
+      #menu .row {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+      }
+      #menu .hint {
+        font-size: 12px;
+        opacity: 0.45;
+        max-width: 420px;
+        text-align: center;
+        line-height: 1.6;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <div id="hud"></div>
+    <div id="menu">
+      <h1>BERGHAIN</h1>
+      <div class="sub">BUILD 1 — THE TOY</div>
+      <button id="btnHost">HOST A ROOM</button>
+      <div class="row">
+        <input id="inpCode" maxlength="4" placeholder="CODE" />
+        <button id="btnJoin">JOIN</button>
+      </div>
+      <div class="hint">
+        WASD move · mouse camera · LMB shove · hold RMB grab · SPACE hop<br />
+        voice over Discord — this build is about the feel
+      </div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
