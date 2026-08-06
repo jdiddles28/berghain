@@ -398,20 +398,26 @@ export const CONFIG = {
     bounceVel: 1.25, // vertical hop velocity on their beat — actually airborne
     danceJitter: [4, 10] as const, // small horizontal shuffle N·s — stays in place
     danceEveryBeats: 2, // each dancer hits every N beats, staggered
-    // walkers lap the room in streams — the "flow of people" you can get
-    // swept up in (John). Not wandering: continuous circulation with pauses.
-    // The circuit is a U, not an O (John): nobody walks between the
-    // dancefloor and the DJ — walkers reaching the stage side turn back.
-    flow: {
-      margin: 1.8, // circuit distance in from the walls
-      stepAng: 0.42, // rad the lap target advances once the current one is reached
-      reachDist: 1.1, // close enough → advance the target
+    // walkers ROAM to fill the whole club (b16, John: "they cluster around the
+    // exit and the bathroom line... the corners are almost always empty").
+    // The old lap circuit was an ellipse inside the walls — an ellipse never
+    // reaches the corners of a rectangle, so the corners were empty BY
+    // CONSTRUCTION. Now each walker picks a destination by best-of-K
+    // sampling: K random standable points, scored by distance to everyone
+    // else's position and destination — the winner lands where the club is
+    // emptiest, so the floor fills evenly, corners included. Walk there,
+    // hang out a while, pick the next spot. Not everyone moves at once.
+    roam: {
+      margin: 1.1, // keep destinations off the walls
+      candidates: 8, // best-of-K — higher = more even spread
       speedMult: 0.85, // amble, don't march
-      ccwShare: 0.7, // most of the room flows one way; the rest push upstream
-      lingerEvery: [9, 24] as const, // s between stopping for a breather
-      lingerFor: [2.5, 6] as const, // s standing still before rejoining the flow
-      // sin(loopAng) below this = the stage/dancefloor strip — bounce back
-      uTurnSin: -0.25,
+      arrive: 0.5, // this close to the destination → stop and hang out
+      lingerFor: [4, 11] as const, // s hanging out before wandering on
+      // everyone not IN a line keeps clear of its occupied squares (John):
+      // destinations never land within this of the line, and en-route
+      // steering shoulders around the line's END rather than cutting through
+      lineAvoid: 1.3,
+      stuckAfter: 2.5, // s of pushing without progress → pick a new spot
     },
     // soft anti-stack nudge ONLY at near-overlap. weight comes from real
     // capsule-vs-capsule contact — a big invisible push field made people

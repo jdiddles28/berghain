@@ -116,7 +116,23 @@ bump from the K bag). Q = tap to drop, hold to charge a throw. No shove — John
 sprint body checks are the violence now. John ruled grab stays on RMB ("left click seems so
 select focused, the action to grab should feel more intentional").
 
-## b15 systems (the current build)
+## b16 additions (the current build)
+
+- **Queue precision**: NPC queuers micro-shuffle onto their slot's EXACT center
+  (proportional servo, 5 cm deadzone) — the old 0.35 m arrive-tolerance + glide read as
+  a ragged blob (John). The straightness test asserts centimeters, keep it tight.
+- **Roaming crowd, no more lap circuit**: walkers pick destinations by best-of-K
+  sampling (`pickRoamSpot`) — K random standable points, hard-rejecting the stall, the
+  stage, the dance pack and anywhere within `roam.lineAvoid` of an occupied line square,
+  scored by distance to every other walker's position AND destination → destinations
+  land where the club is emptiest, so corners fill on their own. (The old circuit was an
+  ellipse — an ellipse never reaches a rectangle's corners; that WAS John's empty-corner
+  bug.) Walk there (`roamWalk`), linger `roam.lingerFor`, repeat; stuck > `stuckAfter`
+  repicks. Minion patrol reuses `roamWalk`. Near an occupied line, en-route steering
+  blends push-away + slide toward the line's nearest END — walkers round the line, only
+  cutting through when hemmed in (John's rule; see docs/bathroom-etiquette.md).
+
+## b15 systems
 
 - **THE LINE SYSTEM is modular** (John: "lines will be a foundational part of the feel of
   this game… get the foundations right now"): `src/sim/linePath.ts` lays out a train of

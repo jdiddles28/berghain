@@ -29,7 +29,9 @@ export const INTERP_DELAY_SNAPS = 2.5;
 // b15: knock events carry power 0|1|2 (raver/LOUD/bouncer bang) instead of a
 // loud flag; dance is an E-toggle (sim-side edge — wire unchanged); stamina
 // ceiling shrinks (computed from nightT — wire unchanged).
-export const PROTOCOL_VERSION = 15;
+// b16: queue precision + roaming crowd distribution (host-sim only — wire
+// unchanged; bumped so mixed-build rooms fail loudly instead of feeling off).
+export const PROTOCOL_VERSION = 16;
 
 // ICE: STUN discovers a direct path between machines; TURN *relays* traffic
 // when hard NATs (phone-hotspot carrier CGNAT, strict office wifi) refuse

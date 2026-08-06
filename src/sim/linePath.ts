@@ -94,8 +94,9 @@ export class LinePath {
 /** an invisible square only occupies STANDABLE area: a clearance ball at
  *  chest height may intersect no static collider (walls, pillars, stage,
  *  the toilet). Dynamic things — people, the swinging door, thrown bags —
- *  don't disqualify a spot; they move. */
-function standable(world: RAPIER.World, x: number, z: number, clearance: number): boolean {
+ *  don't disqualify a spot; they move. Exported: the crowd's roam sampler
+ *  uses the same notion of "somewhere a person can stand". */
+export function standable(world: RAPIER.World, x: number, z: number, clearance: number): boolean {
   let blocked = false;
   world.intersectionsWithShape(
     { x, y: 0.9, z },

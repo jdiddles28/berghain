@@ -44,7 +44,6 @@ function parkCrowd(sim: Sim): void {
     // PINNED: a parked walker summoned by the bathroom-need scheduler used to
     // march across live test scenes and bowl the subjects over mid-assert
     npc.lingerT = 1e9;
-    npc.flowT = 1e9;
   });
   (sim as unknown as { needTimer: number }).needTimer = 1e9;
 }

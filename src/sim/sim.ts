@@ -11,7 +11,7 @@
 
 import RAPIER from '@dimforge/rapier3d-compat';
 import { CONFIG } from '../config';
-import { LinePath } from './linePath';
+import { LinePath, standable } from './linePath';
 import {
   maxStamina,
   targetItemIndex,
@@ -116,11 +116,12 @@ export class Character {
   // the red head fading gradually back to white. Never snaps.
   aggro = 0;
   aggroTarget: Character | null = null;
-  // walker flow: position on the lap circuit
-  loopAng = 0;
-  loopDir = 1;
+  // walker roaming: current destination (null = pick a new one), and how
+  // long we've been pushing without getting anywhere (repick when stuck)
+  roamX: number | null = null;
+  roamZ = 0;
+  roamStuckT = 0;
   lingerT = 0;
-  flowT = 0;
   // walker bathroom need. mode 5 = barging the stall (dragging the camper
   // out). mode 6 = ALERTING: fetching a bouncer and leading it back (John's
   // raver-tells-on-you state machine — the only problem type today is
@@ -353,24 +354,23 @@ export class Sim {
     };
     const taken: { x: number; z: number }[] = [];
     for (let i = 0; i < C.count; i++) {
-      // dancers spawn packed in the dance zone, walkers on the lap circuit,
-      // and the LAST index is the DJ behind the board
+      // dancers spawn packed in the dance zone, walkers SPREAD across the
+      // whole floor (best-of-K sampling vs everyone already placed — the
+      // same logic they roam by), and the LAST index is the DJ
       const isDJ = i === C.count - 1;
-      let walkerAng = Math.random() * Math.PI * 2;
       let spot = isDJ
         ? { x: CONFIG.room.dj.x, z: CONFIG.room.dj.z }
         : i < C.dancers
           ? this.danceSpot(i)
-          : this.flowSpot(walkerAng);
+          : this.pickRoamSpot(taken, null);
       if (!isDJ && i >= C.dancers) {
-        // random circuit angles occasionally landed two walkers inside each
-        // other — the solver blast-apart seeded a t=0 knockdown avalanche
-        // (same bug the dancers had before the sunflower layout)
+        // never spawn two walkers inside each other — the solver blast-apart
+        // seeded a t=0 knockdown avalanche (same bug the dancers had before
+        // the sunflower layout)
         for (let tries = 0; tries < 24; tries++) {
           const clear = taken.every((t) => Math.hypot(t.x - spot.x, t.z - spot.z) > 0.7);
           if (clear) break;
-          walkerAng = Math.random() * Math.PI * 2;
-          spot = this.flowSpot(walkerAng);
+          spot = this.pickRoamSpot(taken, null);
         }
       }
       taken.push(spot);
@@ -393,9 +393,9 @@ export class Sim {
       } else if (i < C.dancers) {
         npc.isDancer = true;
       } else {
-        npc.loopAng = walkerAng;
-        npc.loopDir = Math.random() < C.flow.ccwShare ? 1 : -1;
-        npc.flowT = randRange(...C.flow.lingerEvery);
+        // start hanging out where they spawned, staggered so the room doesn't
+        // erupt into synchronized marching at t=0
+        npc.lingerT = Math.random() * C.roam.lingerFor[1];
         if (isMinion) {
           // the Curator's minions patrol the edges, silent, in black
           npc.isMinion = true;
@@ -473,15 +473,57 @@ export class Sim {
     return { x, z };
   }
 
-  /** a point on the walkers' lap circuit: an ellipse inside the walls, pushed
-   *  off the stage front so the stream doesn't march into the plinth */
-  private flowSpot(a: number): { x: number; z: number } {
+  /** pick a roam destination by best-of-K sampling (b16, John: the lap
+   *  ellipse clustered everyone near the exit and never touched the corners).
+   *  K random points; each must be standable, outside the stall, off the
+   *  dance pack, and clear of every line's occupied squares; the winner is
+   *  the one FARTHEST from everybody else's position and destination — so
+   *  new destinations land wherever the club is emptiest, and the whole
+   *  floor (corners included) fills up on its own. */
+  private pickRoamSpot(
+    others: { x: number; z: number }[],
+    self: Character | null,
+  ): { x: number; z: number } {
     const R = CONFIG.room;
-    const m = CONFIG.crowd.flow.margin;
-    const x = Math.cos(a) * (R.w / 2 - m);
-    let z = Math.sin(a) * (R.d / 2 - m);
-    if (z < -3.1 && Math.abs(x) < R.stage.w / 2 + 0.7) z = -3.1;
-    return { x, z };
+    const RM = CONFIG.crowd.roam;
+    const S = R.stage;
+    let best: { x: number; z: number } | null = null;
+    let bestScore = -1;
+    for (let k = 0; k < RM.candidates; k++) {
+      const x = (Math.random() - 0.5) * (R.w - 2 * RM.margin);
+      const z = (Math.random() - 0.5) * (R.d - 2 * RM.margin);
+      // hard rejections: places a hanging-out clubgoer has no business being
+      if (this.inStall({ x, z })) continue; // the stall is not a hangout
+      if (Math.abs(x - S.x) < S.w / 2 + 0.6 && Math.abs(z - S.z) < S.d / 2 + 0.6) continue; // the stage
+      const DZ = CONFIG.crowd.danceZone;
+      if (Math.hypot(x - DZ.x, z - DZ.z) < DZ.r + 1.0) continue; // the dance pack's floor
+      if (this.nearLine(x, z) < RM.lineAvoid) continue; // never park against a line (John)
+      if (!standable(this.world, x, z, 0.4)) continue; // walls, pillars, toilet
+      // soft score: distance to the nearest other body/destination — maximize
+      let score = Infinity;
+      for (const o of others) score = Math.min(score, Math.hypot(o.x - x, o.z - z));
+      if (score > bestScore) {
+        bestScore = score;
+        best = { x, z };
+      }
+    }
+    // all K candidates rejected (spectacularly unlucky): stay put a moment
+    if (!best) {
+      const p = self ? self.pos() : { x: 0, z: R.d / 2 - 2 };
+      return { x: p.x, z: p.z };
+    }
+    return best;
+  }
+
+  /** distance from (x,z) to the nearest OCCUPIED square of any line —
+   *  today just the bathroom line; a future club loops over all of them */
+  private nearLine(x: number, z: number): number {
+    let nd = Infinity;
+    for (let i = 0; i < this.queue.length; i++) {
+      const s = this.slotPos(i);
+      nd = Math.min(nd, Math.hypot(x - s.x, z - s.z));
+    }
+    return nd;
   }
 
   addPlayer(id: string): void {
@@ -1336,51 +1378,83 @@ export class Sim {
     this.updateCharacter(npc, input, dt);
   }
 
-  /** walk the flow circuit: continuous laps of the room in streams — the
-   *  moving crowd you push through and get swept along by. The circuit is a
-   *  U, not an O (John): the stage/dancefloor strip is nobody's walkway —
-   *  reaching either end of the U turns the walker around. */
-  private flowWalk(npc: Character, input: PlayerInput, p: RAPIER.Vector3, mult: number): void {
-    const F = CONFIG.crowd.flow;
-    let tgt = this.flowSpot(npc.loopAng);
-    let hx = tgt.x - p.x;
-    let hz = tgt.z - p.z;
-    let hd = Math.hypot(hx, hz);
-    if (hd < F.reachDist) {
-      npc.loopAng += F.stepAng * npc.loopDir;
-      if (Math.sin(npc.loopAng) < F.uTurnSin) {
-        // end of the U — about-face and head back the other way
-        npc.loopDir *= -1;
-        npc.loopAng += F.stepAng * 2 * npc.loopDir;
+  /** walk to the current roam destination; arriving (or getting stuck)
+   *  ends the trip and starts a linger. The moving crowd you push through
+   *  is everyone mid-trip — no fixed circuit, the whole floor is fair game. */
+  private roamWalk(npc: Character, input: PlayerInput, p: RAPIER.Vector3, mult: number): void {
+    const RM = CONFIG.crowd.roam;
+    if (npc.roamX === null) {
+      // destinations repel each other: score against every other roamer's
+      // position AND destination, so the crowd self-distributes
+      const others: { x: number; z: number }[] = [];
+      for (const n of this.npcs) {
+        if (n === npc || n.isDancer || n.isDJ) continue;
+        const np = n.pos();
+        others.push({ x: np.x, z: np.z });
+        if (n.roamX !== null) others.push({ x: n.roamX, z: n.roamZ });
       }
-      tgt = this.flowSpot(npc.loopAng);
-      hx = tgt.x - p.x;
-      hz = tgt.z - p.z;
-      hd = Math.hypot(hx, hz) || 1;
+      const spot = this.pickRoamSpot(others, npc);
+      npc.roamX = spot.x;
+      npc.roamZ = spot.z;
+      npc.roamStuckT = 0;
     }
-    // people walk AROUND the bathroom line, not through it — lapping straight
-    // through the queue bowled queuers over (floored front = a deadlocked
-    // door). Works on the line's actual occupied squares, whatever shape the
-    // LinePath took, so it generalizes to every future line.
+    let hx = npc.roamX - p.x;
+    let hz = npc.roamZ - p.z;
+    let hd = Math.hypot(hx, hz);
+    if (hd < RM.arrive) {
+      // made it — hang out here a while, then somewhere new
+      npc.roamX = null;
+      npc.lingerT = randRange(...RM.lingerFor);
+      return;
+    }
+    // stuck against a pillar / a scrum / the door frame: pick somewhere else
+    const lv = npc.body.linvel();
+    if (Math.hypot(lv.x, lv.z) < 0.12) {
+      npc.roamStuckT += CONFIG.sim.dt;
+      if (npc.roamStuckT > RM.stuckAfter) {
+        npc.roamX = null;
+        return;
+      }
+    } else {
+      npc.roamStuckT = 0;
+    }
+    // people walk AROUND a line, not through it (John): near the line's
+    // occupied squares, blend a push away from the line with a slide along
+    // it toward its nearest END — you shoulder around the tail (or the
+    // front), never carve through the middle. Cutting through remains
+    // possible when truly hemmed in (the radial push just loses), which is
+    // exactly the "can cut a path if it must" behavior John described.
     if (this.queue.length > 0) {
-      let nx = 0;
-      let nz = 0;
+      let ni = 0;
       let nd = Infinity;
       for (let i = 0; i < this.queue.length; i++) {
         const s = this.slotPos(i);
         const d = Math.hypot(p.x - s.x, p.z - s.z);
         if (d < nd) {
           nd = d;
-          nx = s.x;
-          nz = s.z;
+          ni = i;
         }
       }
-      if (nd < 1.1) {
-        // shoulder PAST the line: blend in a push directly away from it
-        const ax = (p.x - nx) / (nd || 1);
-        const az = (p.z - nz) / (nd || 1);
-        hx = hx / hd + ax * 1.5;
-        hz = hz / hd + az * 1.5;
+      if (nd < RM.lineAvoid) {
+        const near = this.slotPos(ni);
+        const w = (RM.lineAvoid - nd) / RM.lineAvoid; // 0 at the edge, 1 on the line
+        const ax = (p.x - near.x) / (nd || 1);
+        const az = (p.z - near.z) / (nd || 1);
+        // slide toward whichever end of the occupied line is closer
+        const endIdx = ni < this.queue.length / 2 ? 0 : this.queue.length - 1;
+        const end = this.slotPos(endIdx);
+        let tx = end.x - near.x;
+        let tz = end.z - near.z;
+        const tl = Math.hypot(tx, tz);
+        if (tl > 0.01) {
+          tx /= tl;
+          tz /= tl;
+        } else {
+          tx = az; // at the very end already: slide perpendicular, any way
+          tz = -ax;
+        }
+        hx = hx / hd + (ax * 1.6 + tx * 0.9) * w;
+        hz = hz / hd + (az * 1.6 + tz * 0.9) * w;
         hd = Math.hypot(hx, hz) || 1;
       }
     }
@@ -1475,17 +1549,12 @@ export class Sim {
     switch (npc.walkerMode) {
       case 0: {
         npc.annoyT = 0;
-        const F = C.flow;
+        // roam rhythm: hang out (lingerT), then walk somewhere emptier —
+        // roamWalk starts the next linger itself when the trip ends
         if (npc.lingerT > 0) {
           npc.lingerT -= dt;
         } else {
-          npc.flowT -= dt;
-          if (npc.flowT <= 0) {
-            npc.lingerT = randRange(...F.lingerFor);
-            npc.flowT = randRange(...F.lingerEvery);
-          } else {
-            this.flowWalk(npc, input, p, F.speedMult);
-          }
+          this.roamWalk(npc, input, p, C.roam.speedMult);
         }
         break;
       }
@@ -1498,7 +1567,19 @@ export class Sim {
           break;
         }
         const slot = this.slotPos(idx);
-        const d = this.seekInput(input, p, slot.x, slot.z, 0.8);
+        // stand ON the invisible square, not vaguely near it — the old
+        // 0.35 m "close enough" plus half a second of glide settled everyone
+        // anywhere in a blob wider than the slot spacing, and the line read
+        // as ragged (John: "a straight line... but not a totally straight
+        // line, its weird"). Far: walk. Near: ease onto the exact center.
+        const qx = slot.x - p.x;
+        const qz = slot.z - p.z;
+        const d = Math.hypot(qx, qz);
+        if (d > 0.05) {
+          const sp = Math.min(0.8, d * 1.7);
+          input.moveX = (qx / d) * sp;
+          input.moveZ = (qz / d) * sp;
+        }
         if (d < 0.5) npc.stareYaw = Math.atan2(B.doorMidX - p.x, B.innerZ - p.z);
         // your turn only once you're STANDING at the front, the stall is
         // empty, the door has closed, and nobody else is on the door
@@ -1844,7 +1925,7 @@ export class Sim {
       npc.scanYaw = yawOf(npc.body.rotation());
       return;
     }
-    this.flowWalk(npc, input, p, 0.72);
+    this.roamWalk(npc, input, p, 0.72);
   }
 
   /** standing on the DJ stand / stage — off limits (John) */

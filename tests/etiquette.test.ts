@@ -30,7 +30,6 @@ function parkCrowdFar(sim: Sim, except?: Character[]): void {
     npc.body.setTranslation({ x, y: 1.0, z }, true);
     npc.home = { x, z };
     npc.lingerT = 1e9; // pinned — no marching through the scene
-    npc.flowT = 1e9;
   });
   (sim as unknown as { needTimer: number }).needTimer = 1e9;
 }
@@ -101,14 +100,19 @@ describe('queue geometry + discipline', () => {
     freezeCrowd(sim, line);
     run(sim, 60 * 25);
     expect(sim.queue.length).toBe(3);
-    // every queuer stands on the door's x-line, at increasing distance from it
+    // every queuer stands ON their invisible square (b16, John: "a straight
+    // line...but not a totally straight line" — near-enough-plus-glide left
+    // everyone half a spacing off-center). Tight: centered on the door's
+    // x-line, centimeters from the slot.
     let prevZ: number = B.innerZ;
-    for (const w of sim.queue) {
+    sim.queue.forEach((w, i) => {
       const p = w.pos();
-      expect(Math.abs(p.x - B.doorMidX)).toBeLessThan(0.6);
+      const s = (sim as unknown as { slotPos(i: number): { x: number; z: number } }).slotPos(i);
+      expect(Math.abs(p.x - B.doorMidX)).toBeLessThan(0.2);
+      expect(Math.hypot(p.x - s.x, p.z - s.z)).toBeLessThan(0.25);
       expect(p.z).toBeLessThan(prevZ);
       prevZ = p.z;
-    }
+    });
   }, 60000);
 
   it('one claimant at a time: a freed stall never causes a pile-in', () => {
@@ -398,4 +402,84 @@ describe('the stamina economy (b15)', () => {
     expect(N.bumpRefill / N.maxEnd).toBeGreaterThan(0.5);
     expect(N.bumpRefill / N.maxStart).toBeLessThan(0.3);
   });
+});
+
+// b16: the roaming crowd — walkers FILL the club (the lap ellipse clustered
+// everyone near the exit and never touched the corners), and everyone not in
+// a line keeps clear of its invisible squares.
+describe('crowd roaming', () => {
+  type SimInternals = {
+    pickRoamSpot(
+      others: { x: number; z: number }[],
+      self: Character | null,
+    ): { x: number; z: number };
+    slotPos(i: number): { x: number; z: number };
+  };
+
+  it('roam destinations cover the whole floor — stage-side corners included', () => {
+    const sim = new Sim();
+    const R = CONFIG.room;
+    const S = R.stage;
+    const picks: { x: number; z: number }[] = [];
+    for (let i = 0; i < 200; i++) {
+      picks.push((sim as unknown as SimInternals).pickRoamSpot([], null));
+    }
+    for (const p of picks) {
+      // never in the stall, never on the stage
+      expect(p.x < CONFIG.bathroom.innerX - 0.1 && p.z > CONFIG.bathroom.innerZ + 0.1).toBe(false);
+      expect(
+        Math.abs(p.x - S.x) < S.w / 2 + 0.55 && Math.abs(p.z - S.z) < S.d / 2 + 0.55,
+      ).toBe(false);
+    }
+    // all four quadrants get destinations — and specifically the deep
+    // stage-side corners John never saw anyone in
+    expect(picks.some((p) => p.x < -2 && p.z < -2)).toBe(true);
+    expect(picks.some((p) => p.x > 2 && p.z < -2)).toBe(true);
+    expect(picks.some((p) => p.x < -2 && p.z > 2)).toBe(true);
+    expect(picks.some((p) => p.x > 2 && p.z > 2)).toBe(true);
+    expect(picks.some((p) => p.x < -4.2 && p.z < -3)).toBe(true);
+    expect(picks.some((p) => p.x > 4.2 && p.z < -3)).toBe(true);
+  });
+
+  it('roam destinations never park against an occupied line', () => {
+    const sim = new Sim();
+    stopScheduler(sim);
+    occupyStall(sim, 5);
+    for (let i = 0; i < 3; i++) {
+      const w = aWalker(sim, i);
+      sim.queue.push(w);
+      w.walkerMode = 1;
+    }
+    const internals = sim as unknown as SimInternals;
+    for (let i = 0; i < 120; i++) {
+      const p = internals.pickRoamSpot([], null);
+      let nd = Infinity;
+      for (let s = 0; s < sim.queue.length; s++) {
+        const sp = internals.slotPos(s);
+        nd = Math.min(nd, Math.hypot(p.x - sp.x, p.z - sp.z));
+      }
+      expect(nd).toBeGreaterThanOrEqual(CONFIG.crowd.roam.lineAvoid);
+    }
+  });
+
+  it('walkers actually visit the stage-side corners over time', () => {
+    const sim = new Sim();
+    sim.addPlayer('p0');
+    let left = 0;
+    let right = 0;
+    for (let i = 0; i < 60 * 75; i++) {
+      const inputs = new Map<string, PlayerInput>();
+      inputs.set('p0', { ...ZERO_INPUT });
+      sim.step(inputs);
+      if (i % 30 !== 0) continue;
+      for (const n of sim.npcs) {
+        if (n.isDancer || n.isDJ || n.isMinion) continue;
+        const p = n.pos();
+        if (p.z < -2.6 && p.x < -4) left++;
+        if (p.z < -2.6 && p.x > 4) right++;
+      }
+    }
+    expect(left).toBeGreaterThan(0);
+    expect(right).toBeGreaterThan(0);
+  }, 120000);
 });

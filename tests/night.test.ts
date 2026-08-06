@@ -28,7 +28,6 @@ function parkCrowdFar(sim: Sim, except?: Character): void {
     npc.body.setTranslation({ x, y: 1.0, z }, true);
     npc.home = { x, z };
     npc.lingerT = 1e9;
-    npc.flowT = 1e9;
   });
   (sim as unknown as { needTimer: number }).needTimer = 1e9;
 }

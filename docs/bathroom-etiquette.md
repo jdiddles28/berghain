@@ -28,6 +28,9 @@ disagree, one of them is a bug.
    you shuffle forward one slot. Wander more than `leaveDist` from your slot → you're out
    of the line and the people behind you move up. (NPCs that get shoved stumble back to
    their slot; a player who walks away has left.)
+   **Stand ON the square (b16).** NPC queuers micro-shuffle onto the slot's exact center
+   — not "near enough". A line of people standing centimeters from their squares reads
+   as a straight line from across the room; a 0.35 m tolerance read as a ragged blob.
 3. **Only the front moves on the door.** Exactly one claimant at a time. The front may
    step to the door only when ALL of:
    - they are standing at slot 0,
@@ -106,6 +109,23 @@ Today the only problem type is HOGGING THE BATHROOM; the machine is written to t
 - Occupant leaves mid-ladder → ladder resets; owed bargers rejoin the FRONT of the line
   and normal claiming resumes (exactly ONE person goes for the freed door).
 - Stall empties before a handoff/barge lands → everyone stands down.
+
+## The crowd around the line (b16)
+
+John: "NPCs not in line should be aware of the little squares forming lines too, and try
+to avoid being right next to them if possible. If an npc needs to get through, then sure
+it can cut a path through a line, but they should keep a bit of distance, and always
+prefer walking around the line if they can."
+
+- **Roam destinations never land within `lineAvoid` of an occupied square** — nobody
+  "hangs out" pressed against a line, so a line of queuers is never visually polluted by
+  loiterers.
+- **En-route steering shoulders AROUND the line**: near an occupied square, a walker's
+  heading blends a push away from the line with a slide along it toward its nearest END.
+  They round the tail (or the front), never carve through the middle by choice. The
+  radial push is soft, so a truly hemmed-in NPC can still cut through — with distance.
+- Works on the line's actual occupied squares whatever shape the LinePath took, so it
+  generalizes to every future line (bar, garderobe, entrance).
 
 ## Physical honesty rules
 
