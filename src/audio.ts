@@ -151,17 +151,24 @@ export class ClubAudio {
     if (!this.ctx) return;
     const t = this.ctx.currentTime;
     for (const ev of evs) {
-      if (ev.t === 'shove') this.whoosh(t, ev.hit);
-      else if (ev.t === 'fall') this.thud(t, 1);
+      if (ev.t === 'fall') this.thud(t, 1);
       else if (ev.t === 'impact') this.thud(t, Math.min(1, ev.mag));
       else if (ev.t === 'grab' && ev.on) this.thud(t, 0.25);
+      else if (ev.t === 'pickup') this.thud(t, 0.2);
+      else if (ev.t === 'throw') this.whoosh(t);
+      else if (ev.t === 'dose') this.sniff(t);
     }
   }
 
-  private whoosh(t: number, hit: boolean): void {
+  private whoosh(t: number): void {
     const g = this.noiseBurst(t, 0.12, 0.3, 900);
     g.connect(this.master);
-    if (hit) this.thud(t + 0.03, 0.8);
+  }
+
+  /** two quick high noise pulls — unmistakably a sniff */
+  private sniff(t: number): void {
+    this.noiseBurst(t, 0.09, 0.35, 1600).connect(this.master);
+    this.noiseBurst(t + 0.14, 0.12, 0.3, 1400).connect(this.master);
   }
 
   private thud(t: number, mag: number): void {

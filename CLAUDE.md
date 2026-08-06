@@ -44,7 +44,10 @@ designs and playtests. Status: **pre-prototype — nothing has been built yet.**
 - `src/render/` — three.js view layer, reads snapshots only. No shadow maps; darkness is the look
   but bodies must always be readable (dim ambient + hemisphere + beat-pulsed colored points).
 - `src/net/` — PeerJS star, host-authoritative, 20 Hz snapshots, client interpolates ~125 ms
-  behind. Voice = Discord (per handoff; in-game proximity voice is Build 3+).
+  behind. Snapshots are QUANTIZED BINARY ArrayBuffers (protocol.ts — BinaryPack sends JS
+  numbers as 8 bytes each; the old object snapshots were ~90 KB/s, brutal through a TURN
+  relay). Client input is throttled to 30 Hz with hop latched across the throttle; clients
+  ping every 2 s and show RTT in the HUD. Voice = Discord (in-game proximity voice Build 3+).
 - `src/config.ts` — ALL tuning constants. The physics FEEL lives in `body`/`balance`/`shove`/`grab`.
 - `src/audio.ts` — synthesized 128 BPM techno + SFX, Web Audio, no sound files. Phase-locked to
   the rendered sim beat so the crowd bounces on the kick you hear.
@@ -59,7 +62,12 @@ designs and playtests. Status: **pre-prototype — nothing has been built yet.**
   running never tips you, weak enough that real hits do.
 - Knockdown = accumulated sudden horizontal Δv (mass·Δv in `balance.impulseWindow`) past
   `impulseFall`, or extreme tilt → full ragdoll → timed wobbly get-up (spring ramps back with
-  `getupBoost`). One CLEAN shove floors someone (John's ruling); glancing hits stagger.
+  `getupBoost`). SHOVE IS CUT (b10, John: fun but purposeless). Bodies are the weapon now:
+  `balance.kick` gives char-char contacts closing faster than ~2 m/s a restitution impulse
+  (Rapier resolves capsule-capsule contact too softly to ever read as a hit) — a sprint or
+  sprint-jump body check floors the victim and usually the attacker; walking contact jostles.
+- Downed bodies get `downFriction`/`downLinearDamping` (restored on rise) — without it they
+  toboggan across the room on the frictionless character capsule.
 - Impacts also STAGGER (motor control cut ~staggerMax) — without this the victim's own
   movement controller cancels knockback within 3 frames and shoves don't read.
 - Balance spring kd near critical damping — underdamped bodies oscillate, which reads as
@@ -78,9 +86,22 @@ designs and playtests. Status: **pre-prototype — nothing has been built yet.**
 
 ## Controls (Build 1)
 
-WASD camera-relative move (body yaw-servos to face travel), mouse = free orbit camera,
-LMB shove, hold RMB grab (soft spring, no joints — struggle looks organic), Space hop.
-Peak scheme — the Den of Thieves tank-control ruling was fox-specific and does NOT apply here.
+WASD camera-relative move (body yaw-servos to face travel), mouse look (FP), Space hop.
+RMB = grab: items first (Peak-style look-highlight pickup, incl. snatching from hands),
+else the universal body/wall grip (soft spring, no joints). LMB = USE what's held (hold to
+bump from the K bag). Q = tap to drop, hold to charge a throw. No shove — John cut it (b10);
+sprint body checks are the violence now. John ruled grab stays on RMB ("left click seems so
+select focused, the action to grab should feel more intentional").
+
+## Items + ketamine (b10 scaffolding for Build 2)
+
+- `sim.items`: small carryables. Held = kinematic, rides `items.holdLocal` (visible in FP);
+  loose = tiny dynamic body. One K bag spawns on the DJ stand (20 bumps).
+- K pipeline per player: bump → +1 level `ketamine.onsetDelay` (30 s) later → decay 1 level
+  per `decayEvery` (60 s TEST value). Felt level eases (`easeRate`) and drives everything:
+  speed penalty, upright-target wobble, input overshoot/drift (press W briefly → you carry on
+  further and skew sideways), client-side blur/darken/camera-sway. Level 5 = k-hole: forced
+  ragdoll until decay to 4. NO meters — effects are the feedback (Peak one-bar rule).
 
 ## Standing rules
 

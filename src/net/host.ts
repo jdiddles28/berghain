@@ -32,7 +32,6 @@ interface Remote {
   fast: DataConnection | null;
   input: PlayerInput;
   hopLatch: boolean;
-  shoveLatch: boolean;
   lastInputAt: number;
   admitted: boolean; // hello received + version matched — actually IN the game
 }
@@ -47,7 +46,6 @@ export class HostSession implements Session {
   private accumulator = 0;
   private seq = 0;
   private localHop = false;
-  private localShove = false;
   private pendingEvents: GameEvent[] = [];
 
   private peer: Peer | null = null;
@@ -118,7 +116,6 @@ export class HostSession implements Session {
         fast: null,
         input: { ...ZERO_INPUT },
         hopLatch: false,
-        shoveLatch: false,
         lastInputAt: performance.now(),
         admitted: false,
       };
@@ -165,6 +162,7 @@ export class HostSession implements Session {
       }
       remote.fast = conn;
       conn.on('data', (raw) => {
+        if (raw instanceof ArrayBuffer || ArrayBuffer.isView(raw)) return; // clients don't send buffers
         const msg = raw as FastMsg;
         if (msg.t === 'in') {
           remote.input = {
@@ -174,12 +172,15 @@ export class HostSession implements Session {
             facePitch: msg.fp,
             sprint: msg.sp === 1,
             hop: false,
-            shove: false,
             grab: msg.g === 1,
+            use: msg.u === 1,
+            drop: msg.d === 1,
           };
           if (msg.h === 1) remote.hopLatch = true;
-          if (msg.s === 1) remote.shoveLatch = true;
           remote.lastInputAt = performance.now();
+        } else if (msg.t === 'pi') {
+          // latency probe — echo straight back on the same channel
+          if (conn.open) conn.send({ t: 'po', n: msg.n } satisfies FastMsg);
         }
       });
     }
@@ -203,23 +204,20 @@ export class HostSession implements Session {
     this.lastFrameAt = performance.now();
     this.accumulator += Math.min(frameDt, 0.5);
     this.localHop ||= localInput.hop;
-    this.localShove ||= localInput.shove;
     const dt = CONFIG.sim.dt;
     const now = performance.now();
 
     while (this.accumulator >= dt) {
       const inputs = new Map<string, PlayerInput>();
-      inputs.set(this.localId, { ...localInput, hop: this.localHop, shove: this.localShove });
+      inputs.set(this.localId, { ...localInput, hop: this.localHop });
       this.localHop = false;
-      this.localShove = false;
       for (const r of this.remotes.values()) {
         const stale = now - r.lastInputAt > 500;
         inputs.set(
           r.playerId,
-          stale ? { ...ZERO_INPUT } : { ...r.input, hop: r.hopLatch, shove: r.shoveLatch },
+          stale ? { ...ZERO_INPUT } : { ...r.input, hop: r.hopLatch },
         );
         r.hopLatch = false;
-        r.shoveLatch = false;
       }
 
       this.prevSnap = this.currSnap;

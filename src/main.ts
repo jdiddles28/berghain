@@ -1,7 +1,9 @@
 // Entry point: menu → session (host or client) → fixed-timestep loop.
 
 import { ClubAudio } from './audio';
+import { CONFIG } from './config';
 import { Input } from './input';
+import { targetItemIndex } from './sim/types';
 import { ClientSession } from './net/client';
 import { HostSession } from './net/host';
 import type { Session } from './net/session';
@@ -58,13 +60,37 @@ async function start(mode: 'host' | 'join'): Promise<void> {
     audio.handleEvents(session.drainEvents());
 
     const frame = session.renderFrame();
+    let itemLine = '';
     if (frame) {
       audio.update(frame.beat);
-      view.render(frame, input.camYaw, input.camPitch, session.localId);
+      // Peak-style pickup flow: what you're looking at highlights, the HUD
+      // says what RMB would do, and holding shows the bag's state
+      let targeted = -1;
+      const me = frame.players[session.localId];
+      if (me) {
+        const holding = frame.items.find((it) => it.holder === session!.localId);
+        targeted = targetItemIndex(
+          { x: me.pos.x, y: me.pos.y + CONFIG.camera.eyeHeight, z: me.pos.z },
+          input.camYaw + Math.PI, // camera-orbit yaw → facing yaw (input.ts convention)
+          input.camPitch,
+          frame.items,
+          session.localId,
+          !!holding,
+        );
+        if (holding) {
+          itemLine = `\nbag of K · ${holding.doses}/${CONFIG.ketamine.dosesPerBag} bumps · hold LMB: bump · Q: drop (hold: throw)`;
+        } else if (targeted >= 0) {
+          itemLine = frame.items[targeted].holder
+            ? '\nright click: snatch the bag'
+            : '\nright click: pick up the bag';
+        }
+      }
+      view.render(frame, input.camYaw, input.camPitch, session.localId, targeted);
     }
 
     hud.textContent =
       session.status() +
+      itemLine +
       (input.locked ? '' : '\nclick to grab the mouse · or hold a button + drag to look');
     requestAnimationFrame(loop);
   };

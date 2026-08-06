@@ -9,9 +9,9 @@ export class Input {
   camYaw = 0;
   camPitch = 0; // first person: level gaze by default
   private keys = new Set<string>();
-  private shoveQueued = false;
   private hopQueued = false;
   private grabHeld = false;
+  private useHeld = false;
   locked = false;
 
   constructor(private el: HTMLElement) {
@@ -30,10 +30,11 @@ export class Input {
       if (!this.locked) this.tryLock();
       // actions fire whether or not the lock took — pointer lock is flaky on
       // some machines (Maja's playtest) and the game must stay playable without it
-      if (e.button === 0) this.shoveQueued = true;
-      if (e.button === 2) this.grabHeld = true;
+      if (e.button === 0) this.useHeld = true; // LMB: use what's in your hand
+      if (e.button === 2) this.grabHeld = true; // RMB: pick up / grip
     });
     window.addEventListener('mouseup', (e) => {
+      if (e.button === 0) this.useHeld = false;
       if (e.button === 2) this.grabHeld = false;
     });
     el.addEventListener('contextmenu', (e) => e.preventDefault());
@@ -110,11 +111,11 @@ export class Input {
       facePitch: this.camPitch,
       sprint: this.keys.has('ShiftLeft') || this.keys.has('ShiftRight'),
       hop: this.hopQueued,
-      shove: this.shoveQueued,
       grab: this.grabHeld,
+      use: this.useHeld,
+      drop: this.keys.has('KeyQ'), // tap: drop · hold: charge a throw
     };
     this.hopQueued = false;
-    this.shoveQueued = false;
     return out;
   }
 }

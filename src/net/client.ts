@@ -13,6 +13,7 @@ import {
   relayAvailable,
   ROOM_PREFIX,
   SNAP_EVERY,
+  snapshotSeq,
   turnServer,
   type CtlMsg,
   type FastMsg,
@@ -39,6 +40,16 @@ export class ClientSession implements Session {
   private latestIndex = -1;
   private latestArrival = 0;
   private pendingEvents: GameEvent[] = [];
+  // input goes up at ~30 Hz, not once per rendered frame — a 144 Hz monitor
+  // was pushing 144 packets/s through the relay for no gameplay benefit
+  private lastInputSend = 0;
+  private hopLatch = false;
+  // latency probe: ping every couple of seconds, show the RTT in the HUD so
+  // "it's super laggy" comes with a number attached next time
+  private lastPingAt = 0;
+  private pingSeq = 0;
+  private pingSentAt = new Map<number, number>();
+  rttMs: number | null = null;
 
   constructor(code: string) {
     const hostId = ROOM_PREFIX + code.toUpperCase();
@@ -113,16 +124,28 @@ export class ClientSession implements Session {
     const fast = this.peer.connect(hostId, { label: 'fast', reliable: false });
     this.fast = fast;
     fast.on('data', (raw) => {
+      if (raw instanceof ArrayBuffer || ArrayBuffer.isView(raw)) {
+        // binary snapshot
+        const snap = decodeSnapshot(raw, CONFIG.music.bpm);
+        const index = snapshotSeq(snap) / SNAP_EVERY;
+        if (index <= this.latestIndex - 30) return;
+        this.buffer.push({ index, snap });
+        this.buffer.sort((a, b) => a.index - b.index);
+        if (this.buffer.length > 40) this.buffer.splice(0, this.buffer.length - 40);
+        if (index > this.latestIndex) {
+          this.latestIndex = index;
+          this.latestArrival = performance.now();
+        }
+        return;
+      }
       const msg = raw as FastMsg;
-      if (msg.t !== 'snap') return;
-      const index = msg.seq / SNAP_EVERY;
-      if (index <= this.latestIndex - 30) return;
-      this.buffer.push({ index, snap: decodeSnapshot(msg, CONFIG.music.bpm) });
-      this.buffer.sort((a, b) => a.index - b.index);
-      if (this.buffer.length > 40) this.buffer.splice(0, this.buffer.length - 40);
-      if (index > this.latestIndex) {
-        this.latestIndex = index;
-        this.latestArrival = performance.now();
+      if (msg.t === 'po') {
+        const sent = this.pingSentAt.get(msg.n);
+        if (sent !== undefined) {
+          this.pingSentAt.delete(msg.n);
+          const rtt = performance.now() - sent;
+          this.rttMs = this.rttMs === null ? rtt : this.rttMs * 0.6 + rtt * 0.4;
+        }
       }
     });
   }
@@ -132,7 +155,8 @@ export class ClientSession implements Session {
     // joined but nothing streamed yet: label the black screen instead of
     // leaving people staring at the void wondering if it broke
     if (this.buffer.length === 0) return 'joined — streaming the club in…';
-    return `In as player ${this.localId.slice(1)} · b${PROTOCOL_VERSION}`;
+    const ping = this.rttMs === null ? '' : ` · ${Math.round(this.rttMs)}ms`;
+    return `In as player ${this.localId.slice(1)} · b${PROTOCOL_VERSION}${ping}`;
   }
 
   drainEvents(): GameEvent[] {
@@ -142,7 +166,11 @@ export class ClientSession implements Session {
   }
 
   frame(_frameDt: number, localInput: PlayerInput): void {
-    if (this.fast?.open) {
+    if (!this.fast?.open) return;
+    this.hopLatch ||= localInput.hop; // edge-triggers survive the throttle
+    const now = performance.now();
+    if (now - this.lastInputSend >= 33) {
+      this.lastInputSend = now;
       this.fast.send({
         t: 'in',
         mx: Math.round(localInput.moveX * 1000) / 1000,
@@ -150,10 +178,23 @@ export class ClientSession implements Session {
         fy: Math.round(localInput.faceYaw * 1000) / 1000,
         fp: Math.round(localInput.facePitch * 1000) / 1000,
         sp: localInput.sprint ? 1 : 0,
-        h: localInput.hop ? 1 : 0,
-        s: localInput.shove ? 1 : 0,
+        h: this.hopLatch ? 1 : 0,
         g: localInput.grab ? 1 : 0,
+        u: localInput.use ? 1 : 0,
+        d: localInput.drop ? 1 : 0,
       } satisfies FastMsg);
+      this.hopLatch = false;
+    }
+    if (now - this.lastPingAt >= 2000) {
+      this.lastPingAt = now;
+      const n = this.pingSeq++;
+      this.pingSentAt.set(n, now);
+      if (this.pingSentAt.size > 8) {
+        // relay hiccup ate some pongs — let the map breathe
+        const oldest = this.pingSentAt.keys().next().value!;
+        this.pingSentAt.delete(oldest);
+      }
+      this.fast.send({ t: 'pi', n } satisfies FastMsg);
     }
   }
 

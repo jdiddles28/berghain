@@ -14,9 +14,11 @@ export class View {
 
   private players = new Map<string, ClubberView>();
   private npcs: ClubberView[] = [];
+  private itemViews: { group: THREE.Group; mats: THREE.MeshLambertMaterial[] }[] = [];
   private beams: { light: THREE.PointLight; baseColor: THREE.Color; phase: number }[] = [];
   private strobe: THREE.PointLight;
   private lastTime = 0;
+  private lastFilter = '';
 
   constructor(container: HTMLElement) {
     this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'low-power' });
@@ -149,6 +151,21 @@ export class View {
     }
   }
 
+  /** items are tiny and the room is dark — they read bright on purpose */
+  private ensureItem(i: number): void {
+    while (this.itemViews.length <= i) {
+      const group = new THREE.Group();
+      const bagMat = new THREE.MeshLambertMaterial({ color: 0xdfdfe8, flatShading: true });
+      const zipMat = new THREE.MeshLambertMaterial({ color: 0x8f94a8, flatShading: true });
+      const bag = new THREE.Mesh(new THREE.BoxGeometry(0.11, 0.05, 0.14), bagMat);
+      const zip = new THREE.Mesh(new THREE.BoxGeometry(0.112, 0.014, 0.028), zipMat);
+      zip.position.set(0, 0.02, -0.06);
+      group.add(bag, zip);
+      this.scene.add(group);
+      this.itemViews.push({ group, mats: [bagMat, zipMat] });
+    }
+  }
+
   ensurePlayer(id: string, slot: number): void {
     if (this.players.has(id)) return;
     const colors = CONFIG.colors;
@@ -168,9 +185,29 @@ export class View {
     }
   }
 
-  render(frame: RenderFrame, camYaw: number, camPitch: number, localId: string): void {
+  render(
+    frame: RenderFrame,
+    camYaw: number,
+    camPitch: number,
+    localId: string,
+    targetedItem = -1,
+  ): void {
     const dt = Math.min(0.1, Math.max(0.0001, frame.time - this.lastTime));
     this.lastTime = frame.time;
+
+    // items (before bodies: held items are arm-aim targets)
+    const heldBy = new Map<string, THREE.Vector3>();
+    for (let i = 0; i < frame.items.length; i++) {
+      this.ensureItem(i);
+      const it = frame.items[i];
+      const iv = this.itemViews[i];
+      iv.group.position.set(it.pos.x, it.pos.y, it.pos.z);
+      iv.group.quaternion.set(it.rot.x, it.rot.y, it.rot.z, it.rot.w);
+      if (it.holder) heldBy.set(it.holder, iv.group.position);
+      // Peak-style pickup highlight: the thing RMB would take glows
+      const glow = i === targetedItem ? 0.35 + 0.25 * Math.sin(frame.time * 7) : 0;
+      for (const m of iv.mats) m.emissive.setRGB(glow, glow, glow * 0.7);
+    }
 
     // players
     let slot = 0;
@@ -182,15 +219,17 @@ export class View {
     for (const [id, cv] of this.players) {
       const b = frame.players[id];
       if (b) {
+        const holding = heldBy.get(id) ?? null;
         cv.update(b, dt, frame.beat, {
           grabTarget: gripTarget(b),
+          holdTarget: holding,
           aimPitch: id === localId ? camPitch : 0,
         });
         cv.setHeadVisible(id !== localId); // first person: don't render your own head
         cv.setBodyVisible(id !== localId); // ...or torso/legs — the camera is inside them
-        // own arms only appear when they're DOING something (shove/reach/grip)
+        // own arms only appear when they're DOING something (hold/reach/grip)
         cv.setArmsVisible(
-          id !== localId || b.act === 1 || b.act === 3 || b.gripPoint !== null,
+          id !== localId || b.act === 1 || b.act === 3 || b.gripPoint !== null || holding !== null,
         );
       }
     }
@@ -233,6 +272,20 @@ export class View {
     const me = frame.players[localId];
     if (me) {
       const C = CONFIG.camera;
+      const K = CONFIG.ketamine;
+      const k = me.k;
+      // the world starts to move: slow multi-axis sway scaled by the felt level
+      let swayYaw = 0;
+      let swayPitch = 0;
+      let swayRoll = 0;
+      if (k > 0.03) {
+        const t = frame.time;
+        swayYaw = Math.sin(t * 2.1) * K.viewSway * k;
+        swayPitch = Math.sin(t * 1.63 + 1.3) * K.viewSway * 0.7 * k;
+        swayRoll = Math.sin(t * 1.31 + 2.6) * K.viewSway * 0.9 * k;
+      }
+      const cy = camYaw + swayYaw;
+      const cp = camPitch + swayPitch;
       const bodyQ = new THREE.Quaternion(me.rot.x, me.rot.y, me.rot.z, me.rot.w);
       const eye = new THREE.Vector3(me.pos.x, me.pos.y, me.pos.z);
       if (me.st === 1) {
@@ -240,20 +293,37 @@ export class View {
         eye.add(new THREE.Vector3(0, C.eyeHeight, C.eyeFwd).applyQuaternion(bodyQ));
       } else {
         eye.y += C.eyeHeight;
-        eye.x += -Math.sin(camYaw) * C.eyeFwd; // forward of the face, yaw-only
-        eye.z += -Math.cos(camYaw) * C.eyeFwd;
+        eye.x += -Math.sin(cy) * C.eyeFwd; // forward of the face, yaw-only
+        eye.z += -Math.cos(cy) * C.eyeFwd;
       }
       this.camera.position.copy(eye);
 
-      this.camera.quaternion.setFromEuler(new THREE.Euler(camPitch, camYaw, 0, 'YXZ'));
+      this.camera.quaternion.setFromEuler(new THREE.Euler(cp, cy, 0, 'YXZ'));
       // roll from body tilt: project the body's up onto the camera's right axis
       const bodyUp = new THREE.Vector3(0, 1, 0).applyQuaternion(bodyQ);
       const camRight = new THREE.Vector3(1, 0, 0).applyQuaternion(this.camera.quaternion);
       const rollAmt = Math.asin(THREE.MathUtils.clamp(bodyUp.dot(camRight), -1, 1));
       const blend = me.st === 1 ? 1 : C.bodyRollBlend;
       this.camera.quaternion.multiply(
-        new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), rollAmt * blend),
+        new THREE.Quaternion().setFromAxisAngle(
+          new THREE.Vector3(0, 0, 1),
+          rollAmt * blend + swayRoll,
+        ),
       );
+
+      // blur + darken on a CSS filter — free on the GPU compositor, and it
+      // reads instantly as "I am NOT sober". K-hole: the world smears out.
+      const inHole = me.st === 1 && k >= K.maxLevel - 0.8;
+      const blur = inHole ? K.kholeBlur : k * K.blurPerLevel;
+      const bright = Math.max(0.45, 1 - K.darkenPerLevel * k - (inHole ? 0.2 : 0));
+      const filter =
+        k > 0.06
+          ? `blur(${blur.toFixed(1)}px) brightness(${bright.toFixed(2)}) saturate(${(1 + 0.12 * k).toFixed(2)})`
+          : '';
+      if (filter !== this.lastFilter) {
+        this.lastFilter = filter;
+        this.renderer.domElement.style.filter = filter;
+      }
     }
 
     this.renderer.render(this.scene, this.camera);

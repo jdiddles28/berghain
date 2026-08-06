@@ -1,5 +1,7 @@
 // Plain-data types crossing the sim boundary. No three.js in here, ever.
 
+import { CONFIG } from '../config';
+
 export interface Vec3 {
   x: number;
   y: number;
@@ -22,8 +24,9 @@ export interface PlayerInput {
   facePitch: number;
   sprint: boolean; // held (Shift)
   hop: boolean; // edge-triggered (latched by host)
-  shove: boolean; // edge-triggered
-  grab: boolean; // held
+  grab: boolean; // held (RMB) — items first, then the universal body-grab
+  use: boolean; // held (LMB) — using what's in your hand (bumping the bag)
+  drop: boolean; // held (Q) — tap: drop. hold: charge a throw, release to loose it
 }
 
 export const ZERO_INPUT: PlayerInput = {
@@ -33,8 +36,9 @@ export const ZERO_INPUT: PlayerInput = {
   facePitch: 0,
   sprint: false,
   hop: false,
-  shove: false,
   grab: false,
+  use: false,
+  drop: false,
 };
 
 // 0 upright · 1 down (ragdolled) · 2 getting up
@@ -47,8 +51,22 @@ export interface BodySnap {
   st: BodyState;
   /** world point this body's hands are gripping (any solid), or null */
   gripPoint: Vec3 | null;
-  /** action flag for the view: 0 none · 1 mid-shove · 2 staggered · 3 reaching (grab attempt) */
+  /** action flag for the view: 0 none · 1 dosing (bag to face) · 2 staggered · 3 reaching (grab attempt) */
   act: 0 | 1 | 2 | 3;
+  /** FELT ketamine level 0..5 (players only; 0 for NPCs) — drives effects */
+  k: number;
+}
+
+export type ItemKind = 0; // 0 = bag of K (more later)
+
+export interface ItemSnap {
+  kind: ItemKind;
+  pos: Vec3;
+  rot: Quat;
+  /** player id holding it, or null when loose in the world */
+  holder: string | null;
+  /** for the K bag: bumps left */
+  doses: number;
 }
 
 export interface SimSnapshot {
@@ -56,20 +74,60 @@ export interface SimSnapshot {
   beat: number; // continuous beat counter (time * bpm / 60) — drives lights + audio phase
   players: Record<string, BodySnap>;
   npcs: BodySnap[];
+  items: ItemSnap[];
 }
 
 export type GameEvent =
-  | { t: 'shove'; x: number; y: number; z: number; hit: boolean }
   | { t: 'impact'; x: number; y: number; z: number; mag: number } // hard body/world hits
   | { t: 'fall'; x: number; y: number; z: number }
   | { t: 'getup'; x: number; y: number; z: number }
-  | { t: 'grab'; x: number; y: number; z: number; on: boolean };
+  | { t: 'grab'; x: number; y: number; z: number; on: boolean }
+  | { t: 'pickup'; x: number; y: number; z: number } // item into a hand (incl. steals)
+  | { t: 'throw'; x: number; y: number; z: number }
+  | { t: 'dose'; x: number; y: number; z: number }; // sniff
 
 export interface RenderFrame {
   time: number;
   beat: number;
   players: Record<string, BodySnap>;
   npcs: BodySnap[];
+  items: ItemSnap[];
+}
+
+/** Peak-style pickup targeting: which item is under the look ray? Shared by
+ *  the sim (actual pickup) and the client (highlight + HUD hint) so what
+ *  lights up is exactly what RMB will take. Items in another player's hand
+ *  can be targeted too (stealing) — at shorter range, and never while the
+ *  would-be thief is already holding something. */
+export function targetItemIndex(
+  eye: Vec3,
+  yaw: number,
+  pitch: number,
+  items: ItemSnap[],
+  selfId: string,
+  selfHolding: boolean,
+): number {
+  if (selfHolding) return -1;
+  const cp = Math.cos(pitch);
+  const dir = { x: Math.sin(yaw) * cp, y: Math.sin(pitch), z: Math.cos(yaw) * cp };
+  let best = -1;
+  let bestDot: number = CONFIG.items.pickupCos;
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i];
+    if (it.holder === selfId) continue;
+    const range = it.holder ? CONFIG.items.stealRange : CONFIG.items.pickupRange;
+    const dx = it.pos.x - eye.x;
+    const dy = it.pos.y - eye.y;
+    const dz = it.pos.z - eye.z;
+    const d = Math.hypot(dx, dy, dz);
+    if (d > range || d < 1e-4) continue;
+    const dot = (dx * dir.x + dy * dir.y + dz * dir.z) / d;
+    if (dot > bestDot) {
+      bestDot = dot;
+      best = i;
+    }
+  }
+  return best;
 }
 
 export function lerpSnapshot(a: SimSnapshot, b: SimSnapshot, t: number): RenderFrame {
@@ -79,11 +137,22 @@ export function lerpSnapshot(a: SimSnapshot, b: SimSnapshot, t: number): RenderF
     players[id] = lerpBody(pa, pb, t);
   }
   const npcs: BodySnap[] = b.npcs.map((nb, i) => lerpBody(a.npcs[i] ?? nb, nb, t));
+  const items: ItemSnap[] = b.items.map((ib, i) => {
+    const ia = a.items[i] ?? ib;
+    return {
+      kind: ib.kind,
+      pos: lerpV(ia.pos, ib.pos, t),
+      rot: slerp(ia.rot, ib.rot, t),
+      holder: ib.holder,
+      doses: ib.doses,
+    };
+  });
   return {
     time: a.time + (b.time - a.time) * t,
     beat: a.beat + (b.beat - a.beat) * t,
     players,
     npcs,
+    items,
   };
 }
 
@@ -95,6 +164,7 @@ function lerpBody(a: BodySnap, b: BodySnap, t: number): BodySnap {
     st: b.st,
     gripPoint: a.gripPoint && b.gripPoint ? lerpV(a.gripPoint, b.gripPoint, t) : b.gripPoint,
     act: b.act,
+    k: a.k + (b.k - a.k) * t,
   };
 }
 

@@ -4,14 +4,21 @@
 // limited-strength PD spring. Movement is force-based, so crowd bumps genuinely
 // displace you; a hard enough hit (or too much tilt) overwhelms the spring and
 // you ragdoll, flop for a while, then wobble back to your feet.
+//
+// There is deliberately NO shove verb (John cut it: fun but purposeless — it
+// only tempted you into trouble). Bodies are still weapons: sprint-jump into
+// someone and the momentum exchange floors them (and often you) emergently.
 
 import RAPIER from '@dimforge/rapier3d-compat';
 import { CONFIG } from '../config';
 import {
+  targetItemIndex,
   ZERO_INPUT,
   type BodySnap,
   type BodyState,
   type GameEvent,
+  type ItemKind,
+  type ItemSnap,
   type PlayerInput,
   type SimSnapshot,
 } from './types';
@@ -34,26 +41,54 @@ interface CharCfg {
   maxAccel: number;
 }
 
-class Character {
+export interface Item {
+  kind: ItemKind;
   body: RAPIER.RigidBody;
+  collider: RAPIER.Collider;
+  holder: Character | null;
+  holderId: string | null;
+  doses: number;
+}
+
+export class Character {
+  body: RAPIER.RigidBody;
+  collider: RAPIER.Collider;
+  pid = ''; // player id ('' for NPCs) — item snapshots name their holder
   state: BodyState = 0;
   stateT = 0; // time in current state
   hitAccum = 0; // recent received impulse (decays) — knockdown trigger
   staggerT = 0; // motor control cut after real impacts — makes knockback READ
-  shoveT = 0; // arms-out shove animation window (broadcast via act)
   wantGrab = false; // player holding grab — arms reach out even on a whiff
   hopCd = 0;
-  shoveCd = 0;
   /** universal grip: any solid body, stuck at the exact contact point */
   grip: { body: RAPIER.RigidBody; local: { x: number; y: number; z: number } } | null = null;
+  // items in hand
+  holding: Item | null = null;
+  prevGrab = false; // pickup fires on the RMB edge, not every held frame
+  prevDrop = false;
+  dropT = 0; // how long Q has been held — tap drops, a hold charges a throw
+  useT = 0; // how long LMB has been held on the bag — one bump per doseHoldTime
+  dosing = false;
+  // ketamine (players only)
+  kLevel = 0; // true level 0..5
+  kFelt = 0; // eased level the effects run off — arrives/fades smoothly
+  kPending: number[] = []; // sim-times at which taken bumps HIT (onset delay)
+  kLastChange = 0;
+  kDriftPhase = Math.random() * Math.PI * 2;
+  kInX = 0; // smoothed move input while high — the "kept walking" overshoot
+  kInZ = 0;
   swayPhase = Math.random() * Math.PI * 2;
   prevVx = 0; // last step's horizontal velocity — impact detection
   prevVz = 0;
   // NPC brain
   home: { x: number; z: number };
-  wanderT = 0;
   dancePhase = 0; // which beat this NPC hits
   isDJ = false; // mans the booth: no wandering, no hopping, walks back if moved
+  // walker flow: position on the lap circuit
+  loopAng = 0;
+  loopDir = 1;
+  lingerT = 0;
+  flowT = 0;
 
   constructor(
     world: RAPIER.World,
@@ -77,8 +112,8 @@ class Character {
       .setFrictionCombineRule(RAPIER.CoefficientCombineRule.Min)
       .setRestitution(CONFIG.body.restitution)
       .setDensity(0);
-    const collider = world.createCollider(col, this.body);
-    collider.setMass(cfg.mass);
+    this.collider = world.createCollider(col, this.body);
+    this.collider.setMass(cfg.mass);
     this.home = { x, z };
     this.dancePhase = danceSlot;
   }
@@ -93,6 +128,7 @@ export class Sim {
   time = 0;
   players = new Map<string, Character>();
   npcs: Character[] = [];
+  items: Item[] = [];
   /** live center of the dancing mass — dancers lump toward each other */
   private packCenter: { x: number; z: number } = {
     x: CONFIG.crowd.danceZone.x,
@@ -107,6 +143,7 @@ export class Sim {
     this.world.timestep = CONFIG.sim.dt;
     this.buildRoom();
     this.spawnCrowd();
+    this.spawnItems();
   }
 
   private buildRoom(): void {
@@ -143,6 +180,24 @@ export class Sim {
       RAPIER.ColliderDesc.cuboid(dj.boardW / 2, dj.boardH / 2, dj.boardD / 2),
       fixed(dj.x, s.h + dj.boardH / 2, dj.boardZ),
     );
+    // everything that LOOKS solid IS solid (John caught ghost booth gear):
+    // the board's top slab, the decks/mixer sitting on it, the speaker stacks
+    this.world.createCollider(
+      RAPIER.ColliderDesc.cuboid((dj.boardW + 0.12) / 2, 0.025, (dj.boardD + 0.12) / 2),
+      fixed(dj.x, s.h + dj.boardH + 0.025, dj.boardZ),
+    );
+    for (const ox of [-0.55, 0, 0.55]) {
+      this.world.createCollider(
+        RAPIER.ColliderDesc.cuboid(ox === 0 ? 0.15 : 0.21, 0.03, 0.17),
+        fixed(dj.x + ox, s.h + dj.boardH + 0.08, dj.boardZ),
+      );
+    }
+    for (const sx of [-s.w / 2 + 0.7, s.w / 2 - 0.7]) {
+      this.world.createCollider(
+        RAPIER.ColliderDesc.cuboid(0.55, 1.1, 0.5),
+        fixed(s.x + sx, s.h + 1.1, s.z - 0.3),
+      );
+    }
   }
 
   private spawnCrowd(): void {
@@ -159,24 +214,58 @@ export class Sim {
       maxAccel: C.maxAccel,
     };
     for (let i = 0; i < C.count; i++) {
-      // dancers spawn packed in the dance zone, walkers around the edges,
+      // dancers spawn packed in the dance zone, walkers on the lap circuit,
       // and the LAST index is the DJ behind the board
       const isDJ = i === C.count - 1;
+      const walkerAng = Math.random() * Math.PI * 2;
       const spot = isDJ
         ? { x: CONFIG.room.dj.x, z: CONFIG.room.dj.z }
         : i < C.dancers
           ? this.danceSpot()
-          : this.edgeSpot();
+          : this.flowSpot(walkerAng);
       const npc = new Character(this.world, cfg, spot.x, spot.z, false, i % C.danceEveryBeats);
-      npc.wanderT = randRange(...C.wanderEvery);
       if (isDJ) {
         npc.isDJ = true;
         // the booth is up on the stage
         const p = npc.body.translation();
         npc.body.setTranslation({ x: p.x, y: p.y + CONFIG.room.stage.h, z: p.z }, true);
+      } else if (i >= C.dancers) {
+        npc.loopAng = walkerAng;
+        npc.loopDir = Math.random() < C.flow.ccwShare ? 1 : -1;
+        npc.flowT = randRange(...C.flow.lingerEvery);
       }
       this.npcs.push(npc);
     }
+  }
+
+  private spawnItems(): void {
+    // the first object in the game: a small bag of K on the DJ stand
+    const I = CONFIG.items;
+    const dj = CONFIG.room.dj;
+    const s = CONFIG.room.stage;
+    const body = this.world.createRigidBody(
+      RAPIER.RigidBodyDesc.dynamic()
+        .setTranslation(dj.x - 0.3, s.h + dj.boardH + 0.12, dj.boardZ + 0.02)
+        .setLinearDamping(0.4)
+        .setAngularDamping(1.2)
+        .setCcdEnabled(true),
+    );
+    const col = this.world.createCollider(
+      RAPIER.ColliderDesc.cuboid(I.kbag.w / 2, I.kbag.h / 2, I.kbag.d / 2)
+        .setFriction(0.6)
+        .setRestitution(0.1)
+        .setDensity(0),
+      body,
+    );
+    col.setMass(I.kbag.mass);
+    this.items.push({
+      kind: 0,
+      body,
+      collider: col,
+      holder: null,
+      holderId: null,
+      doses: CONFIG.ketamine.dosesPerBag,
+    });
   }
 
   private danceSpot(): { x: number; z: number } {
@@ -186,19 +275,15 @@ export class Sim {
     return { x: Z.x + Math.cos(a) * r, z: Z.z + Math.sin(a) * r };
   }
 
-  private edgeSpot(): { x: number; z: number } {
+  /** a point on the walkers' lap circuit: an ellipse inside the walls, pushed
+   *  off the stage front so the stream doesn't march into the plinth */
+  private flowSpot(a: number): { x: number; z: number } {
     const R = CONFIG.room;
-    const band = CONFIG.crowd.walkerEdgeBand;
-    // pick a point in the border band (off the dancefloor, away from the stage)
-    for (let tries = 0; tries < 20; tries++) {
-      const x = (Math.random() - 0.5) * (R.w - 1.6);
-      const z = (Math.random() - 0.5) * (R.d - 1.6);
-      const nearWallX = Math.abs(x) > R.w / 2 - band;
-      const nearWallZ = Math.abs(z) > R.d / 2 - band;
-      const onStage = z < -R.d / 2 + 2.6;
-      if ((nearWallX || nearWallZ) && !onStage) return { x, z };
-    }
-    return { x: R.w / 2 - 1.2, z: 0 };
+    const m = CONFIG.crowd.flow.margin;
+    const x = Math.cos(a) * (R.w / 2 - m);
+    let z = Math.sin(a) * (R.d / 2 - m);
+    if (z < -3.1 && Math.abs(x) < R.stage.w / 2 + 0.7) z = -3.1;
+    return { x, z };
   }
 
   addPlayer(id: string): void {
@@ -217,6 +302,7 @@ export class Sim {
     };
     const n = this.players.size;
     const p = new Character(this.world, cfg, -2 + n * 2, CONFIG.room.d / 2 - 1.6, true);
+    p.pid = id;
     this.players.set(id, p);
   }
 
@@ -227,6 +313,7 @@ export class Sim {
       if (other.grip?.body === p.body) this.releaseGrip(other);
     }
     this.releaseGrip(p);
+    if (p.holding) this.releaseItem(p, 0, null);
     this.world.removeRigidBody(p.body);
     this.players.delete(id);
   }
@@ -255,6 +342,7 @@ export class Sim {
     }
     this.applyCrowdSeparation(dt);
     this.updateGrips();
+    this.updateHeldItems();
 
     this.world.step();
 
@@ -269,17 +357,22 @@ export class Sim {
   private updateCharacter(ch: Character, input: PlayerInput, dt: number): void {
     ch.stateT += dt;
     ch.hopCd = Math.max(0, ch.hopCd - dt);
-    ch.shoveCd = Math.max(0, ch.shoveCd - dt);
-    ch.shoveT = Math.max(0, ch.shoveT - dt);
     ch.staggerT = Math.max(0, ch.staggerT - dt);
     ch.hitAccum = Math.max(0, ch.hitAccum - (CONFIG.balance.impulseFall / CONFIG.balance.impulseWindow) * dt);
 
+    if (ch.isPlayer) this.updateKetamine(ch, input, dt);
+
     if (ch.state === 1) {
-      // down: floppy. get-up timer.
-      if (ch.stateT >= CONFIG.balance.downTime) {
+      // down: floppy. get-up timer — unless you're in the k-hole, where you
+      // STAY down until the level decays back under the ceiling.
+      if (ch.stateT >= CONFIG.balance.downTime && ch.kLevel < CONFIG.ketamine.maxLevel) {
         ch.state = 2;
         ch.stateT = 0;
         ch.body.setAngularDamping(CONFIG.body.angularDamping);
+        // restore the slidey character capsule — the down-state friction/drag
+        // that stops toboggan slides would fight the wobbly rise
+        ch.body.setLinearDamping(CONFIG.body.linearDamping);
+        ch.collider.setFriction(CONFIG.body.friction);
         const v = ch.body.linvel();
         ch.body.setLinvel({ x: v.x, y: v.y + CONFIG.balance.getupNudge, z: v.z }, true);
         this.emit({ t: 'getup', ...vec(ch.pos()) });
@@ -301,6 +394,37 @@ export class Sim {
       }
     }
 
+    // ketamine input distortion: a small press carries further than intended
+    // and skews sideways — the intent filter, not a canned animation
+    let mvX = input.moveX;
+    let mvZ = input.moveZ;
+    if (ch.isPlayer && ch.kFelt > 0.02) {
+      const K = CONFIG.ketamine;
+      const pressing =
+        Math.hypot(input.moveX, input.moveZ) >= Math.hypot(ch.kInX, ch.kInZ) - 1e-3;
+      const tau = K.inputAttack + (pressing ? 0 : K.inputReleasePerLevel * ch.kFelt);
+      const alpha = 1 - Math.exp(-dt / Math.max(tau, 1e-3));
+      ch.kInX += (input.moveX - ch.kInX) * alpha;
+      ch.kInZ += (input.moveZ - ch.kInZ) * alpha;
+      const w = Math.min(1, ch.kFelt);
+      const ex = input.moveX * (1 - w) + ch.kInX * w;
+      const ez = input.moveZ * (1 - w) + ch.kInZ * w;
+      const ang =
+        Math.sin(this.time * Math.PI * 2 * K.driftHz + ch.kDriftPhase) *
+        K.driftAngPerLevel *
+        ch.kFelt;
+      const ca = Math.cos(ang);
+      const sa = Math.sin(ang);
+      mvX = ex * ca - ez * sa;
+      mvZ = ex * sa + ez * ca;
+    } else {
+      ch.kInX = input.moveX;
+      ch.kInZ = input.moveZ;
+    }
+    const eff: PlayerInput = mvX === input.moveX && mvZ === input.moveZ
+      ? input
+      : { ...input, moveX: mvX, moveZ: mvZ };
+
     // upright spring (ramped during get-up so the rise is a wobble, not a snap;
     // cut while staggered so hits produce a visible flail)
     const staggered = ch.staggerT > 0;
@@ -308,18 +432,17 @@ export class Sim {
       (ch.state === 2 ? Math.min(1, ch.stateT / CONFIG.balance.getupRamp) : 1) *
       (ch.grip ? CONFIG.grab.holderKpMult : 1) *
       (staggered ? CONFIG.balance.staggerSpringMult : 1);
-    this.applyUprightSpring(ch, springScale, input, dt);
+    this.applyUprightSpring(ch, springScale, eff, dt);
 
     // movement force toward desired velocity — staggered bodies lose their
-    // motor control, which is what lets a shove actually SHOVE
+    // motor control, which is what lets a body check actually LAND
     const grounded = this.isGrounded(ch);
-    const wantX = input.moveX;
-    const wantZ = input.moveZ;
     const speedMult =
       (ch.grip ? CONFIG.grab.holderSpeedMult : 1) *
-      (input.sprint && ch.isPlayer && !ch.grip ? CONFIG.body.sprintMult : 1);
-    const targetVx = wantX * ch.cfg.moveSpeed * speedMult;
-    const targetVz = wantZ * ch.cfg.moveSpeed * speedMult;
+      (input.sprint && ch.isPlayer && !ch.grip ? CONFIG.body.sprintMult : 1) *
+      (ch.isPlayer ? Math.max(0.3, 1 - CONFIG.ketamine.speedPenalty * ch.kFelt) : 1);
+    const targetVx = mvX * ch.cfg.moveSpeed * speedMult;
+    const targetVz = mvZ * ch.cfg.moveSpeed * speedMult;
     const v = ch.body.linvel();
     let fx = (targetVx - v.x) * ch.cfg.mass * ch.cfg.accelGain;
     let fz = (targetVz - v.z) * ch.cfg.mass * ch.cfg.accelGain;
@@ -342,20 +465,82 @@ export class Sim {
       ch.hopCd = CONFIG.body.hopCooldown;
     }
 
-    // shove
-    if (input.shove && ch.shoveCd <= 0 && !staggered) {
-      this.doShove(ch);
-      ch.shoveCd = CONFIG.shove.cooldown;
-      ch.shoveT = CONFIG.shove.windupTime;
-    }
+    if (ch.isPlayer) this.updateItemVerbs(ch, input, dt);
+  }
 
-    // grab (players only — hold to grip, release to drop). arms reach out for
-    // as long as grab is held, even when there's nothing to catch.
-    if (ch.isPlayer) {
-      ch.wantGrab = input.grab;
-      if (input.grab && !ch.grip) this.tryGrab(ch, input);
-      else if (!input.grab && ch.grip) this.releaseGrip(ch);
+  /** RMB: items first (Peak-style pickup, incl. stealing from hands), then the
+   *  universal body-grab. Q: tap to drop, hold to charge a throw. LMB: use
+   *  what's in your hand — for the K bag, hold to take a bump. */
+  private updateItemVerbs(ch: Character, input: PlayerInput, dt: number): void {
+    // pickup on the RMB edge only — held RMB must not vacuum the bag back
+    // into your hand the instant you drop it
+    const grabEdge = input.grab && !ch.prevGrab;
+    if (grabEdge && !ch.holding && ch.state === 0) {
+      const idx = this.targetItemFor(ch, input);
+      if (idx >= 0) this.pickupItem(ch, this.items[idx]);
     }
+    // universal grip only with a free hand
+    ch.wantGrab = input.grab && !ch.holding;
+    if (input.grab && !ch.grip && !ch.holding) this.tryGrab(ch, input);
+    else if ((!input.grab || ch.holding) && ch.grip) this.releaseGrip(ch);
+    ch.prevGrab = input.grab;
+
+    // drop / charged throw
+    if (ch.holding) {
+      if (input.drop) {
+        ch.dropT = Math.min(ch.dropT + dt, CONFIG.items.throwChargeMax);
+      } else if (ch.prevDrop) {
+        const I = CONFIG.items;
+        if (ch.dropT < I.throwChargeMin) {
+          this.releaseItem(ch, 0, input);
+        } else {
+          const c = Math.min(
+            1,
+            (ch.dropT - I.throwChargeMin) / (I.throwChargeMax - I.throwChargeMin),
+          );
+          this.releaseItem(ch, I.throwSpeed[0] + (I.throwSpeed[1] - I.throwSpeed[0]) * c, input, true);
+        }
+        ch.dropT = 0;
+      }
+    } else {
+      ch.dropT = 0;
+    }
+    ch.prevDrop = input.drop;
+
+    // hold LMB with the bag: one bump per doseHoldTime
+    ch.dosing =
+      !!ch.holding && ch.holding.kind === 0 && ch.holding.doses > 0 && input.use && ch.state === 0;
+    if (ch.dosing) {
+      ch.useT += dt;
+      if (ch.useT >= CONFIG.ketamine.doseHoldTime) {
+        ch.useT = 0;
+        ch.holding!.doses--;
+        ch.kPending.push(this.time + CONFIG.ketamine.onsetDelay);
+        this.emit({ t: 'dose', ...vec(ch.pos()) });
+      }
+    } else {
+      ch.useT = 0;
+    }
+  }
+
+  /** level bookkeeping: bumps hit on a delay, levels decay on a timer, the
+   *  FELT level eases between them, and level 5 is the k-hole. */
+  private updateKetamine(ch: Character, _input: PlayerInput, dt: number): void {
+    const K = CONFIG.ketamine;
+    while (ch.kPending.length > 0 && this.time >= ch.kPending[0]) {
+      ch.kPending.shift();
+      if (ch.kLevel < K.maxLevel) ch.kLevel++;
+      ch.kLastChange = this.time;
+    }
+    if (ch.kPending.length === 0 && ch.kLevel > 0 && this.time - ch.kLastChange >= K.decayEvery) {
+      ch.kLevel--;
+      ch.kLastChange = this.time;
+    }
+    const de = ch.kLevel - ch.kFelt;
+    const stepMax = K.easeRate * dt;
+    ch.kFelt += Math.abs(de) < stepMax ? de : Math.sign(de) * stepMax;
+    // the k-hole: you're simply GONE until you surface back to level 4
+    if (ch.kLevel >= K.maxLevel && ch.state !== 1) this.knockDown(ch);
   }
 
   /** PD spring toward world-up + lean into acceleration + idle sway. */
@@ -374,6 +559,13 @@ export class Sim {
     const swz = Math.cos(this.time * Math.PI * 2 * CONFIG.body.swayHz * 0.83 + ch.swayPhase * 1.7) * sway;
     let dx = input.moveX * lean + swx;
     let dz = input.moveZ * lean + swz;
+    if (ch.kFelt > 0.02) {
+      // sea legs: the target itself wobbles, so the whole body weaves
+      const K = CONFIG.ketamine;
+      const amp = K.wobbleAmp * ch.kFelt;
+      dx += Math.sin(this.time * Math.PI * 2 * K.wobbleHz + ch.kDriftPhase) * amp;
+      dz += Math.cos(this.time * Math.PI * 2 * K.wobbleHz * 0.77 + ch.kDriftPhase * 1.9) * amp;
+    }
     const desired = norm3({ x: dx, y: 1, z: dz });
 
     // torque = kp * (up × desired) - kd * angvel  (yaw axis left free-ish)
@@ -419,7 +611,7 @@ export class Sim {
 
   private postStep(ch: Character, _dt: number): void {
     // impact detection: sudden horizontal Δv means something hit us (or we hit
-    // something). own movement force can only produce ~33 N·s per step.
+    // something). own movement force can only produce a fraction of this.
     const v = ch.body.linvel();
     const imp = Math.hypot(v.x - ch.prevVx, v.z - ch.prevVz) * ch.cfg.mass;
     ch.prevVx = v.x;
@@ -451,7 +643,12 @@ export class Sim {
     ch.stateT = 0;
     ch.hitAccum = 0;
     ch.body.setAngularDamping(CONFIG.balance.downAngularDamping);
+    // downed bodies get real friction + drag: no more tobogganing across the
+    // room on the frictionless character capsule (restored when they rise)
+    ch.body.setLinearDamping(CONFIG.balance.downLinearDamping);
+    ch.collider.setFriction(CONFIG.balance.downFriction);
     this.releaseGrip(ch); // you drop what YOU hold; grips ON you keep dragging — that's the toy
+    if (ch.holding) this.releaseItem(ch, 0, null);
     this.emit({ t: 'fall', ...vec(ch.pos()) });
   }
 
@@ -462,46 +659,95 @@ export class Sim {
     return hit !== null;
   }
 
-  // ---------- verbs ----------
+  // ---------- items ----------
 
-  private doShove(ch: Character): void {
+  private targetItemFor(ch: Character, input: PlayerInput): number {
     const p = ch.pos();
-    const rot = ch.body.rotation();
-    const fwd = rotateVec(rot, { x: 0, y: 0, z: 1 });
-    const fxz = norm2(fwd.x, fwd.z);
-    let hit = false;
-    const cosHalf = Math.cos((CONFIG.shove.halfAngleDeg * Math.PI) / 180);
-    for (const other of this.allChars()) {
-      if (other === ch) continue;
-      const op = other.pos();
-      const dx = op.x - p.x;
-      const dz = op.z - p.z;
-      const dist = Math.hypot(dx, dz);
-      if (dist > CONFIG.shove.range || dist < 1e-4) continue;
-      const dot = (dx / dist) * fxz.x + (dz / dist) * fxz.z;
-      if (dot < cosHalf) continue;
-      // hands land on the CHEST, above the COM — that offset is what tips the
-      // victim away from you. A center-of-mass impulse has no rotation, so
-      // fall direction was contact roulette (victims crumpled toward the
-      // shover often enough that John called it out).
-      const chest = rotateVec(other.body.rotation(), { x: 0, y: CONFIG.shove.chestLift, z: 0 });
-      other.body.applyImpulseAtPoint(
-        {
-          x: (dx / dist) * CONFIG.shove.impulse,
-          y: CONFIG.shove.upImpulse,
-          z: (dz / dist) * CONFIG.shove.impulse,
-        },
-        { x: op.x + chest.x, y: op.y + chest.y, z: op.z + chest.z },
-        true,
-      );
-      other.hitAccum += CONFIG.shove.balanceDamage;
-      hit = true;
-    }
-    // lunge — shoving is committal, whiffing overbalances YOU a little
-    ch.body.applyImpulse({ x: fxz.x * CONFIG.shove.selfLunge, y: 0, z: fxz.z * CONFIG.shove.selfLunge }, true);
-    ch.hitAccum += hit ? 0 : CONFIG.shove.balanceDamage * 0.35;
-    this.emit({ t: 'shove', ...vec(p), hit });
+    const eye = { x: p.x, y: p.y + CONFIG.camera.eyeHeight, z: p.z };
+    return targetItemIndex(
+      eye,
+      input.faceYaw,
+      input.facePitch,
+      this.snapItems(),
+      ch.pid,
+      !!ch.holding,
+    );
   }
+
+  private pickupItem(ch: Character, it: Item): void {
+    if (it.holder) {
+      // straight out of their hand — mid-bump included
+      it.holder.holding = null;
+      it.holder.dosing = false;
+      it.holder.useT = 0;
+    }
+    it.holder = ch;
+    it.holderId = ch.pid;
+    ch.holding = it;
+    it.body.setBodyType(RAPIER.RigidBodyType.KinematicPositionBased, true);
+    it.collider.setSensor(true);
+    this.emit({ t: 'pickup', ...vec(it.body.translation()) });
+  }
+
+  private releaseItem(
+    ch: Character,
+    speed: number,
+    input: PlayerInput | null,
+    isThrow = false,
+  ): void {
+    const it = ch.holding;
+    if (!it) return;
+    ch.holding = null;
+    ch.dosing = false;
+    it.holder = null;
+    it.holderId = null;
+    it.body.setBodyType(RAPIER.RigidBodyType.Dynamic, true);
+    it.collider.setSensor(false);
+    const hp = this.handWorld(ch);
+    it.body.setTranslation(hp, true);
+    const v = ch.body.linvel();
+    let dir = { x: 0, y: 0, z: 0 };
+    if (input) {
+      if (isThrow) {
+        const cp = Math.cos(input.facePitch);
+        dir = {
+          x: Math.sin(input.faceYaw) * cp,
+          y: Math.sin(input.facePitch) + CONFIG.items.throwUpBias,
+          z: Math.cos(input.faceYaw) * cp,
+        };
+        const l = Math.hypot(dir.x, dir.y, dir.z) || 1;
+        dir = { x: dir.x / l, y: dir.y / l, z: dir.z / l };
+        this.emit({ t: 'throw', ...hp });
+      } else {
+        // tap: a soft underhand release, not a launch
+        dir = { x: Math.sin(input.faceYaw), y: -0.15, z: Math.cos(input.faceYaw) };
+        speed = CONFIG.items.dropSpeed;
+      }
+    }
+    it.body.setLinvel({ x: v.x + dir.x * speed, y: v.y + dir.y * speed, z: v.z + dir.z * speed }, true);
+    it.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
+  }
+
+  /** where a held item sits: out in front of the chest, or up at the face
+   *  mid-bump */
+  private handWorld(ch: Character): { x: number; y: number; z: number } {
+    const local = ch.dosing ? CONFIG.items.doseLocal : CONFIG.items.holdLocal;
+    const p = ch.pos();
+    const o = rotateVec(ch.body.rotation(), local);
+    return { x: p.x + o.x, y: p.y + o.y, z: p.z + o.z };
+  }
+
+  /** held items ride the holder's hand as kinematic bodies — pocket-size
+   *  things don't need (or want) the full ragdoll treatment while carried */
+  private updateHeldItems(): void {
+    for (const it of this.items) {
+      if (!it.holder) continue;
+      it.body.setNextKinematicTranslation(this.handWorld(it.holder));
+      it.body.setNextKinematicRotation(it.holder.body.rotation());
+    }
+  }
+
+  // ---------- grip ----------
 
   /** REPO-style: cast the hand along the LOOK direction. Whatever solid it
    *  touches — person, wall, pillar, stage — stick to the exact contact point.
@@ -642,7 +888,7 @@ export class Sim {
     if (npc.state === 0) {
       const p = npc.pos();
       if (npc.isDJ) {
-        // mans the booth. shove him anywhere and he trudges back to his decks.
+        // mans the booth. push him anywhere and he trudges back to his decks.
         const hx = npc.home.x - p.x;
         const hz = npc.home.z - p.z;
         const hd = Math.hypot(hx, hz);
@@ -692,27 +938,47 @@ export class Sim {
           input.moveZ = hz / hd;
         }
       } else {
-        // walkers: no bounce in them at all, just slow laps around the edges
-        npc.wanderT -= dt;
-        if (npc.wanderT <= 0) {
-          npc.wanderT = randRange(...C.wanderEvery);
-          npc.home = this.edgeSpot();
-        }
-        const hx = npc.home.x - p.x;
-        const hz = npc.home.z - p.z;
-        const hd = Math.hypot(hx, hz);
-        if (hd > 0.8) {
-          input.moveX = hx / hd;
-          input.moveZ = hz / hd;
+        // walkers: the FLOW. Continuous laps of the room in streams — the
+        // moving crowd you push through and get swept along by — with the
+        // odd pause to stand and be somewhere.
+        const F = C.flow;
+        if (npc.lingerT > 0) {
+          npc.lingerT -= dt;
+        } else {
+          npc.flowT -= dt;
+          if (npc.flowT <= 0) {
+            npc.lingerT = randRange(...F.lingerFor);
+            npc.flowT = randRange(...F.lingerEvery);
+          } else {
+            let tgt = this.flowSpot(npc.loopAng);
+            let hx = tgt.x - p.x;
+            let hz = tgt.z - p.z;
+            let hd = Math.hypot(hx, hz);
+            if (hd < F.reachDist) {
+              npc.loopAng += F.stepAng * npc.loopDir;
+              tgt = this.flowSpot(npc.loopAng);
+              hx = tgt.x - p.x;
+              hz = tgt.z - p.z;
+              hd = Math.hypot(hx, hz) || 1;
+            }
+            input.moveX = (hx / hd) * F.speedMult;
+            input.moveZ = (hz / hd) * F.speedMult;
+          }
         }
       }
     }
     this.updateCharacter(npc, input, dt);
   }
 
-  /** crowd shrugs — soft constant separation so the pack churns instead of stacking */
+  /** crowd shrugs — soft constant separation so the pack churns instead of
+   *  stacking — plus the body-check kick: Rapier resolves capsule-on-capsule
+   *  contact softly over several steps, so raw momentum exchange between two
+   *  PEOPLE never spikes like a real hit. Pairs closing fast get a symmetric
+   *  restitution impulse along the contact line; a sprint-jump check launches
+   *  both parties, walking-pace contact never triggers it. */
   private applyCrowdSeparation(_dt: number): void {
     const C = CONFIG.crowd;
+    const K = CONFIG.balance.kick;
     const chars = this.allChars();
     for (let i = 0; i < chars.length; i++) {
       const a = chars[i];
@@ -725,7 +991,22 @@ export class Sim {
         const dx = bp.x - ap.x;
         const dz = bp.z - ap.z;
         const d = Math.hypot(dx, dz);
-        if (d > C.personalSpace || d < 1e-4) continue;
+        if (d < 1e-4) continue;
+        // body-check kick at (or just before) contact
+        const touchDist = a.cfg.radius + b.cfg.radius + 0.08;
+        if (d < touchDist) {
+          const nx = dx / d;
+          const nz = dz / d;
+          const va = a.body.linvel();
+          const vb = b.body.linvel();
+          const closing = (va.x - vb.x) * nx + (va.z - vb.z) * nz;
+          if (closing > K.minClose) {
+            const jmag = Math.min(K.max, (closing - K.minClose) * K.perClose);
+            a.body.applyImpulse({ x: -nx * jmag, y: 0, z: -nz * jmag }, true);
+            b.body.applyImpulse({ x: nx * jmag, y: jmag * 0.12, z: nz * jmag }, true);
+          }
+        }
+        if (d > C.personalSpace) continue;
         const f = (1 - d / C.personalSpace) * C.separationForce;
         const fx = (dx / d) * f;
         const fz = (dz / d) * f;
@@ -745,7 +1026,22 @@ export class Sim {
       beat: (this.time * CONFIG.music.bpm) / 60,
       players,
       npcs: this.npcs.map((n) => this.snapBody(n)),
+      items: this.snapItems(),
     };
+  }
+
+  private snapItems(): ItemSnap[] {
+    return this.items.map((it) => {
+      const p = it.body.translation();
+      const r = it.body.rotation();
+      return {
+        kind: it.kind,
+        pos: { x: p.x, y: p.y, z: p.z },
+        rot: { x: r.x, y: r.y, z: r.z, w: r.w },
+        holder: it.holderId,
+        doses: it.doses,
+      };
+    });
   }
 
   private snapBody(ch: Character): BodySnap {
@@ -758,14 +1054,8 @@ export class Sim {
       vel: { x: v.x, y: v.y, z: v.z },
       st: ch.state,
       gripPoint: this.gripAnchorWorld(ch),
-      act:
-        ch.shoveT > 0
-          ? 1
-          : ch.wantGrab && !ch.grip
-            ? 3
-            : ch.staggerT > 0
-              ? 2
-              : 0,
+      act: ch.dosing ? 1 : ch.wantGrab && !ch.grip ? 3 : ch.staggerT > 0 ? 2 : 0,
+      k: ch.kFelt,
     };
   }
 
@@ -805,11 +1095,6 @@ function yawOf(q: { x: number; y: number; z: number; w: number }): number {
 function norm3(v: { x: number; y: number; z: number }) {
   const l = Math.hypot(v.x, v.y, v.z) || 1;
   return { x: v.x / l, y: v.y / l, z: v.z / l };
-}
-
-function norm2(x: number, z: number) {
-  const l = Math.hypot(x, z) || 1;
-  return { x: x / l, z: z / l };
 }
 
 function clampN(v: number, m: number): number {

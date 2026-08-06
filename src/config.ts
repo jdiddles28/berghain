@@ -39,8 +39,6 @@ export const CONFIG = {
     restitution: 0.0,
 
     // upright PD controller. kp limited by maxTorque — big hits overwhelm it.
-    // strong enough that RUNNING never tips you: knockdowns come from the
-    // impulse accumulator (balance.impulseFall), not from friction torque.
     // kd near critical damping (~207 for this kp/inertia): an underdamped body
     // visibly oscillates after every nudge, which reads as BOUNCING in FP.
     uprightKp: 640,
@@ -53,10 +51,14 @@ export const CONFIG = {
     yawMaxTorque: 400,
 
     // movement: force toward desired velocity. being pushed genuinely displaces you.
-    moveSpeed: 3.0, // m/s target (John: standard walk was a little too fast)
-    sprintMult: 1.6, // hold SHIFT — 4.8 m/s, and sprint collisions hit harder for free
-    accelGain: 7.5, // (vDesired - v) * mass * gain, clamped below
-    maxAccel: 26, // m/s² cap → max force = mass * this
+    // SLOW and deliberate (John: walking and running were way too fast) — club
+    // pace, and pushing through the crowd should cost real effort.
+    moveSpeed: 1.9, // m/s target
+    sprintMult: 1.85, // hold SHIFT — ~3.5 m/s; sprint collisions hit harder for free
+    // high gain + accel cap = snappy starts and PLANTED stops. low gain was
+    // the "gliding not walking" feel: half a second of drift after every input.
+    accelGain: 12,
+    maxAccel: 30, // m/s² cap → max force = mass * this
     airControl: 0.25,
     hopVel: 3.4, // Space — small hop, enough for the 0.45 m stage
     hopCooldown: 0.45,
@@ -73,18 +75,33 @@ export const CONFIG = {
   // knockdown/get-up — the comedy threshold
   balance: {
     tiltFallDeg: 58, // past this tilt you're gone
-    impulseFall: 260, // N·s of accumulated hit in a short window → gone even if upright
+    // accumulated hit (N·s of sudden horizontal Δv) in a short window → down.
+    // walking face-first into a wall (~142 N·s of self-stop) STAGGERS but
+    // stays under the bar; sprinting into one sails over it — comedy.
+    impulseFall: 165,
+    // capsule-on-capsule contacts resolve softly over several solver steps, so
+    // raw momentum exchange between two people never spikes hard enough to
+    // read as a HIT (bodies are squish, walls are not). This term is the
+    // elasticity of a body check: pairs closing faster than minClose get a
+    // symmetric restitution kick along the contact normal. Outcomes stay
+    // emergent — a sprint-JUMP check reliably floors the victim (and usually
+    // the attacker, who is lighter), while walking-pace crowd contact
+    // (closing < minClose) never triggers it.
+    kick: { minClose: 2.0, perClose: 120, max: 260 },
     impulseWindow: 0.35, // s
     // stagger: real impacts cut the victim's motor control so knockback READS.
-    // without this the movement controller cancels a shove within 3 frames.
+    // without this the movement controller cancels the hit within 3 frames.
     staggerPerImpulse: 1 / 300, // s of stagger per N·s of impact
     staggerMax: 0.9, // s
     staggerMoveMult: 0.12, // movement force while staggered
     staggerSpringMult: 0.4, // upright spring while staggered — they flail
     // impacts are detected as sudden HORIZONTAL velocity change (mass × Δv).
     // vertical is excluded so hopping/landing never floors you.
-    // one clean shove ≈ 150+40 = 90% of threshold: two quick hits floor you.
-    impactMin: 90, // N·s below this: not an impact (own movement maxes ~33)
+    // 75: above the ~41 N·s the motor can self-inflict per step, low enough
+    // that the FIRST chunk of a soft multi-step body-check contact staggers —
+    // the stagger cuts the victim's motor, which lets the rest of the
+    // momentum actually land instead of being braked away.
+    impactMin: 75, // N·s below this: not an impact
     impactEvent: 140, // N·s above this: audible thud event
     downTime: 1.9, // ragdoll on the floor before trying to rise
     getupRamp: 0.85, // s over which the upright spring fades back in (the wobbly rise)
@@ -92,24 +109,11 @@ export const CONFIG = {
     getupBoost: 3.0, // spring strength multiplier while rising (gravity is strong, cheat a little)
     getupNudge: 1.6, // small upward velocity at start of rise so you unstick from the floor
     downAngularDamping: 1.1, // floppier while down
-  },
-
-  shove: {
-    range: 1.25,
-    halfAngleDeg: 55,
-    impulse: 270, // N·s through the chest — a committed two-hand shove, SNAPPY
-    upImpulse: 30, // slight lift for readability. a push, not a toss.
-    // hands land this far UP the victim's body axis from their center. An
-    // impulse above the COM is what makes people topple AWAY from you —
-    // center-of-mass shoves produced no rotation, so fall direction was left
-    // to contact chaos and victims sometimes crumpled TOWARD the shover.
-    chestLift: 0.26,
-    selfLunge: 55, // recoil/lunge on the shover
-    windupTime: 0.3, // arms-out animation window broadcast to views
-    cooldown: 0.6,
-    // bonus on top of the physical impulse: 270+95 clears impulseFall (260),
-    // so a clean shove KNOCKS PEOPLE DOWN (John's ruling). glancing ones stagger.
-    balanceDamage: 95,
+    // downed bodies used to toboggan across the room on the frictionless
+    // character capsule (John: "they slide for way too long"). While ragdolled
+    // the body gets real friction + drag; both restored when they start rising.
+    downLinearDamping: 2.4,
+    downFriction: 0.55,
   },
 
   // REPO-style universal grip: a physical reach-ray from the hands. Whatever
@@ -127,42 +131,88 @@ export const CONFIG = {
     holderKpMult: 0.75, // and destabilizing
   },
 
+  // small carryables, Peak-style: look at one → it highlights → RMB picks it
+  // up into your hand (no ragdoll-object simulation for pocket-size things).
+  items: {
+    pickupRange: 1.9, // from the eye, along the look direction
+    pickupCos: 0.95, // how tight the look-cone is (~18°)
+    stealRange: 1.6, // grabbing something out of another player's hand
+    // held out in front AND high enough to sit in the bottom of the FP frame —
+    // you should SEE what you're carrying (Peak carry)
+    holdLocal: { x: 0.18, y: 0.26, z: 0.46 },
+    doseLocal: { x: 0.06, y: 0.44, z: 0.26 }, // the bag comes up to the face mid-bump
+    dropSpeed: 1.1, // tap Q: just let it go
+    throwChargeMin: 0.28, // held shorter than this = a drop, not a throw
+    throwChargeMax: 1.0, // full windup
+    throwSpeed: [5.5, 13] as const, // m/s at min..max charge
+    throwUpBias: 0.2, // arc it a little
+    kbag: { w: 0.11, h: 0.05, d: 0.14, mass: 0.25 },
+  },
+
+  // the K economy, Build-2 scaffolding. One bag = 20 bumps. Effects arrive on
+  // a delay, stack per level, and ease in/out — no hard steps.
+  ketamine: {
+    dosesPerBag: 20,
+    doseHoldTime: 1.1, // hold LMB with the bag this long = one bump
+    onsetDelay: 30, // s from the bump to the level actually hitting
+    decayEvery: 60, // s per level coming back down (TEST value — real game much longer)
+    maxLevel: 5, // hitting 5 = k-hole: full ragdoll until you decay back to 4
+    easeRate: 0.5, // levels/s the FELT level eases toward the true level
+    // movement, per felt-level (0..5):
+    speedPenalty: 0.115, // speed × (1 − this·k) → ~54% at level 4
+    wobbleAmp: 0.028, // rad of upright-target sway per level — the sea legs
+    wobbleHz: 0.5,
+    inputAttack: 0.1, // s — smoothing on move input while high (barely felt sober)
+    inputReleasePerLevel: 0.24, // s of extra momentum AFTER you release a key
+    driftAngPerLevel: 0.11, // rad the move direction slowly skews sideways per level
+    driftHz: 0.21,
+    // visuals, per felt-level (client-side, own player only):
+    blurPerLevel: 0.75, // px
+    darkenPerLevel: 0.065,
+    viewSway: 0.013, // rad of slow camera sway per level
+    kholeBlur: 7, // px — the world smears out when you go down
+  },
+
   crowd: {
-    count: 33, // 22 dancers + 10 walkers + the DJ (always the LAST index)
+    count: 36, // 22 dancers + 13 walkers + the DJ (always the LAST index)
     radius: 0.27,
     halfHeight: 0.55, // NPCs are TALLER than the player — you look up at the crowd
     mass: 82, // people are HEAVY — bodying through a human should cost you
-    // scaled for the TALLER, HEAVIER body (halfHeight .55 / mass 82): gravity
-    // torque at the 58° fall threshold is ~560 N·m, so anything less than that
-    // in maxTorque means every stumble past ~35° is an unrecoverable slow-motion
-    // faceplant (John playtest: "walking at a 45 degree angle, flopping around").
-    // Stumbles still happen — via stagger and the impulse accumulator, not via
-    // a spring too weak to stand a body up.
-    // kp must beat the capsule's toppling leverage (m·g·halfHeight ≈ 442) by
-    // the same MARGIN players enjoy, or every walk settles into a visible
-    // 10-15° "falling forward" lean (John playtest). Ratio here ≈ 1.8, like
-    // the player's. Falls still come from the impulse accumulator, not tilt.
+    // scaled for the TALLER, HEAVIER body (halfHeight .55 / mass 82): kp must
+    // beat the capsule's toppling leverage (m·g·halfHeight ≈ 442 N·m) by the
+    // same ~1.8× margin the player enjoys, or walking settles into a visible
+    // 10-15° lean and every stumble past ~35° is an unrecoverable faceplant.
     uprightKp: 800,
     uprightKd: 225, // near critical for this kp/inertia — no metronome sway
     maxTorque: 600,
     moveSpeed: 1.1,
-    accelGain: 5,
-    maxAccel: 12,
+    // the crowd pushes BACK: their motor has enough authority that a body in
+    // motion shoulders you aside instead of stopping dead when you touch it —
+    // getting through a moving crowd should take real shoving (John).
+    accelGain: 6.5,
+    maxAccel: 15,
     // the crowd splits: a pack DANCING mid-floor (genuinely hopping, whole
-    // body, staying roughly in place near each other) and a handful of
-    // non-dancers walking the edges with no bounce in them at all.
+    // body, staying roughly in place near each other) and non-dancers
+    // CIRCULATING the room — Berghain is a building full of people in motion.
     dancers: 22, // NPC index < dancers ⇒ dancer; the rest are walkers
     danceZone: { x: 0, z: -0.8, r: 2.2 }, // spawn seed + soft mid-floor bias
     // dancers lump toward the live centroid of the pack, not a fixed spot
     // (John: "not necessarily 1 defined place, but they like to lump together").
-    // Knocked away ⇒ they walk back to wherever the mass currently is.
     packRadius: 1.7, // further than this from the mass → shuffle back in
     bounceVel: 1.25, // vertical hop velocity on their beat — actually airborne
     danceJitter: [6, 16] as const, // small horizontal shuffle N·s — stays in place
     danceEveryBeats: 2, // each dancer hits every N beats, staggered
-    walkerEdgeBand: 2.2, // walkers roam within this band off the walls
-    // wandering: pick a new spot every so often
-    wanderEvery: [7, 18] as const, // s
+    // walkers lap the room in streams — the "flow of people" you can get
+    // swept up in (John). Not wandering: continuous circulation with pauses.
+    flow: {
+      margin: 1.8, // circuit distance in from the walls
+      stepAng: 0.42, // rad the lap target advances once the current one is reached
+      reachDist: 1.1, // close enough → advance the target
+      speedMult: 0.85, // amble, don't march
+      ccwShare: 0.7, // most of the room flows one way; the rest push upstream
+      lingerEvery: [9, 24] as const, // s between stopping for a breather
+      lingerFor: [2.5, 6] as const, // s standing still before rejoining the flow
+    },
     // soft anti-stack nudge ONLY at near-overlap. weight comes from real
     // capsule-vs-capsule contact — a big invisible push field made people
     // glide away before you touched them, which read as weightless.

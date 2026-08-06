@@ -3,7 +3,7 @@
 //  - label "fast" (unreliable): input + snapshot streams, latest-wins
 // Voice is Discord for Build 1 (per the handoff) — no voice channel here.
 
-import type { BodySnap, GameEvent, SimSnapshot } from '../sim/types';
+import type { BodySnap, GameEvent, ItemSnap, SimSnapshot } from '../sim/types';
 
 export const ROOM_PREFIX = 'fslop-bhn-'; // + 4-letter room code = host PeerJS id
 export const SNAP_EVERY = 3; // 60/3 = 20 Hz snapshots
@@ -16,7 +16,8 @@ export const INTERP_DELAY_SNAPS = 2.5;
 // Also fine to bump when a fix simply MUST reach everyone (b4: crowd balance +
 // the pointer-lock fallback; b5: walker lean + own-body clipping) — the
 // handshake doubles as a build-freshness gate.
-export const PROTOCOL_VERSION = 9;
+// b10: shove removed, items + K, BINARY snapshots (see encodeSnapshot).
+export const PROTOCOL_VERSION = 10;
 
 // ICE: STUN discovers a direct path between machines; TURN *relays* traffic
 // when hard NATs (phone-hotspot carrier CGNAT, strict office wifi) refuse
@@ -93,61 +94,183 @@ export type CtlMsg =
   | { t: 'full' }
   | { t: 'ev'; evs: GameEvent[] };
 
-// body: [x,y,z, qx,qy,qz,qw, vx,vy,vz, state, act, hasGrip, gx,gy,gz]
-export type BodyWire = [
-  number, number, number,
-  number, number, number, number,
-  number, number, number,
-  number, number, number, number, number, number,
-];
-
+// input + tiny ping/pong ride the fast channel as JSON-ish objects; snapshots
+// are raw ArrayBuffers (see below) — the receiver tells them apart by type
 export type FastMsg =
-  | { t: 'in'; mx: number; mz: number; fy: number; fp: number; sp: 0 | 1; h: 0 | 1; s: 0 | 1; g: 0 | 1 }
-  | { t: 'snap'; seq: number; time: number; players: Record<string, BodyWire>; npcs: BodyWire[] };
+  | {
+      t: 'in';
+      mx: number;
+      mz: number;
+      fy: number;
+      fp: number;
+      sp: 0 | 1;
+      h: 0 | 1;
+      g: 0 | 1;
+      u: 0 | 1;
+      d: 0 | 1;
+    }
+  | { t: 'pi'; n: number }
+  | { t: 'po'; n: number };
 
-export function encodeSnapshot(seq: number, snap: SimSnapshot): FastMsg {
-  const players: Record<string, BodyWire> = {};
-  for (const [id, b] of Object.entries(snap.players)) players[id] = enc(b);
-  return {
-    t: 'snap',
-    seq,
-    time: Math.round(snap.time * 1000) / 1000,
-    players,
-    npcs: snap.npcs.map(enc),
-  };
+// ---------- binary snapshots ----------
+// John+Maja's first relay session was "super super laggy": BinaryPack encodes
+// every JS number as 8 bytes, so the old object snapshots were ~4.5 KB × 20 Hz
+// ≈ 90 KB/s — brutal through a TURN relay on a phone hotspot. Quantized i16s
+// cut that ~4×. Positions in mm, quats ×32000, velocities in mm/s.
+//
+// Layout (little-endian):
+//   u32 seq · f32 time · u8 nPlayers · u8 nNpcs · u8 nItems
+//   per player: u8 playerNum, body
+//   per npc:    body
+//   body: u8 st · u8 act · u8 k(×51) · u8 hasGrip ·
+//         i16 pos xyz (mm) · i16 quat xyzw (×32000) · i16 vel xyz (mm/s) ·
+//         [i16 grip xyz (mm) if hasGrip]
+//   per item: u8 kind · u8 holderNum (255 = loose) · u8 doses ·
+//             i16 pos xyz (mm) · i16 quat xyzw (×32000)
+
+const QP = 1000; // position → mm
+const QQ = 32000; // quaternion
+const QV = 1000; // velocity → mm/s
+
+export function encodeSnapshot(seq: number, snap: SimSnapshot): ArrayBuffer {
+  const ids = Object.keys(snap.players);
+  let size = 4 + 4 + 3;
+  for (const id of ids) size += 1 + bodySize(snap.players[id]);
+  for (const b of snap.npcs) size += bodySize(b);
+  size += snap.items.length * 17;
+  const buf = new ArrayBuffer(size);
+  const dv = new DataView(buf);
+  let o = 0;
+  dv.setUint32(o, seq, true);
+  o += 4;
+  dv.setFloat32(o, snap.time, true);
+  o += 4;
+  dv.setUint8(o++, ids.length);
+  dv.setUint8(o++, snap.npcs.length);
+  dv.setUint8(o++, snap.items.length);
+  for (const id of ids) {
+    dv.setUint8(o++, Number(id.slice(1)));
+    o = writeBody(dv, o, snap.players[id]);
+  }
+  for (const b of snap.npcs) o = writeBody(dv, o, b);
+  for (const it of snap.items) {
+    dv.setUint8(o++, it.kind);
+    dv.setUint8(o++, it.holder ? Number(it.holder.slice(1)) : 255);
+    dv.setUint8(o++, it.doses);
+    o = writeI16x3(dv, o, it.pos.x * QP, it.pos.y * QP, it.pos.z * QP);
+    o = writeQuat(dv, o, it.rot);
+  }
+  return buf;
 }
 
-export function decodeSnapshot(msg: Extract<FastMsg, { t: 'snap' }>, bpm: number): SimSnapshot {
+export function decodeSnapshot(raw: ArrayBuffer | ArrayBufferView, bpm: number): SimSnapshot {
+  const dv = ArrayBuffer.isView(raw)
+    ? new DataView(raw.buffer, raw.byteOffset, raw.byteLength)
+    : new DataView(raw);
+  let o = 0;
+  const seq = dv.getUint32(o, true);
+  o += 4;
+  const time = dv.getFloat32(o, true);
+  o += 4;
+  const nPlayers = dv.getUint8(o++);
+  const nNpcs = dv.getUint8(o++);
+  const nItems = dv.getUint8(o++);
   const players: SimSnapshot['players'] = {};
-  for (const [id, w] of Object.entries(msg.players)) players[id] = dec(w);
+  for (let i = 0; i < nPlayers; i++) {
+    const num = dv.getUint8(o++);
+    const [body, o2] = readBody(dv, o);
+    o = o2;
+    players[`p${num}`] = body;
+  }
+  const npcs: BodySnap[] = [];
+  for (let i = 0; i < nNpcs; i++) {
+    const [body, o2] = readBody(dv, o);
+    o = o2;
+    npcs.push(body);
+  }
+  const items: ItemSnap[] = [];
+  for (let i = 0; i < nItems; i++) {
+    const kind = dv.getUint8(o++) as ItemSnap['kind'];
+    const holderNum = dv.getUint8(o++);
+    const doses = dv.getUint8(o++);
+    const pos = { x: dv.getInt16(o, true) / QP, y: dv.getInt16(o + 2, true) / QP, z: dv.getInt16(o + 4, true) / QP };
+    o += 6;
+    const rot = readQuat(dv, o);
+    o += 8;
+    items.push({ kind, pos, rot, holder: holderNum === 255 ? null : `p${holderNum}`, doses });
+  }
+  const snap: SimSnapshot = { time, beat: (time * bpm) / 60, players, npcs, items };
+  return Object.assign(snap, { seq }) as SimSnapshot & { seq: number };
+}
+
+/** the seq is smuggled onto the decoded snapshot — fish it back out */
+export function snapshotSeq(snap: SimSnapshot): number {
+  return (snap as SimSnapshot & { seq: number }).seq;
+}
+
+function bodySize(b: BodySnap): number {
+  return 24 + (b.gripPoint ? 6 : 0);
+}
+
+function writeBody(dv: DataView, o: number, b: BodySnap): number {
+  dv.setUint8(o++, b.st);
+  dv.setUint8(o++, b.act);
+  dv.setUint8(o++, Math.max(0, Math.min(255, Math.round(b.k * 51))));
+  dv.setUint8(o++, b.gripPoint ? 1 : 0);
+  o = writeI16x3(dv, o, b.pos.x * QP, b.pos.y * QP, b.pos.z * QP);
+  o = writeQuat(dv, o, b.rot);
+  o = writeI16x3(dv, o, b.vel.x * QV, b.vel.y * QV, b.vel.z * QV);
+  if (b.gripPoint) {
+    o = writeI16x3(dv, o, b.gripPoint.x * QP, b.gripPoint.y * QP, b.gripPoint.z * QP);
+  }
+  return o;
+}
+
+function readBody(dv: DataView, o: number): [BodySnap, number] {
+  const st = dv.getUint8(o++) as BodySnap['st'];
+  const act = dv.getUint8(o++) as BodySnap['act'];
+  const k = dv.getUint8(o++) / 51;
+  const hasGrip = dv.getUint8(o++) === 1;
+  const pos = { x: dv.getInt16(o, true) / QP, y: dv.getInt16(o + 2, true) / QP, z: dv.getInt16(o + 4, true) / QP };
+  o += 6;
+  const rot = readQuat(dv, o);
+  o += 8;
+  const vel = { x: dv.getInt16(o, true) / QV, y: dv.getInt16(o + 2, true) / QV, z: dv.getInt16(o + 4, true) / QV };
+  o += 6;
+  let gripPoint: BodySnap['gripPoint'] = null;
+  if (hasGrip) {
+    gripPoint = { x: dv.getInt16(o, true) / QP, y: dv.getInt16(o + 2, true) / QP, z: dv.getInt16(o + 4, true) / QP };
+    o += 6;
+  }
+  return [{ pos, rot, vel, st, act, k, gripPoint }, o];
+}
+
+function writeI16x3(dv: DataView, o: number, a: number, b: number, c: number): number {
+  dv.setInt16(o, clampI16(a), true);
+  dv.setInt16(o + 2, clampI16(b), true);
+  dv.setInt16(o + 4, clampI16(c), true);
+  return o + 6;
+}
+
+function writeQuat(dv: DataView, o: number, q: { x: number; y: number; z: number; w: number }): number {
+  dv.setInt16(o, clampI16(q.x * QQ), true);
+  dv.setInt16(o + 2, clampI16(q.y * QQ), true);
+  dv.setInt16(o + 4, clampI16(q.z * QQ), true);
+  dv.setInt16(o + 6, clampI16(q.w * QQ), true);
+  return o + 8;
+}
+
+function readQuat(dv: DataView, o: number): { x: number; y: number; z: number; w: number } {
   return {
-    time: msg.time,
-    beat: (msg.time * bpm) / 60,
-    players,
-    npcs: msg.npcs.map(dec),
+    x: dv.getInt16(o, true) / QQ,
+    y: dv.getInt16(o + 2, true) / QQ,
+    z: dv.getInt16(o + 4, true) / QQ,
+    w: dv.getInt16(o + 6, true) / QQ,
   };
 }
 
-function enc(b: BodySnap): BodyWire {
-  return [
-    r3(b.pos.x), r3(b.pos.y), r3(b.pos.z),
-    r3(b.rot.x), r3(b.rot.y), r3(b.rot.z), r3(b.rot.w),
-    r3(b.vel.x), r3(b.vel.y), r3(b.vel.z),
-    b.st, b.act,
-    b.gripPoint ? 1 : 0,
-    r3(b.gripPoint?.x ?? 0), r3(b.gripPoint?.y ?? 0), r3(b.gripPoint?.z ?? 0),
-  ];
-}
-
-function dec(w: BodyWire): BodySnap {
-  return {
-    pos: { x: w[0], y: w[1], z: w[2] },
-    rot: { x: w[3], y: w[4], z: w[5], w: w[6] },
-    vel: { x: w[7], y: w[8], z: w[9] },
-    st: w[10] as BodySnap['st'],
-    act: w[11] as BodySnap['act'],
-    gripPoint: w[12] === 1 ? { x: w[13], y: w[14], z: w[15] } : null,
-  };
+function clampI16(v: number): number {
+  return Math.max(-32768, Math.min(32767, Math.round(v)));
 }
 
 export function makeRoomCode(): string {
@@ -155,8 +278,4 @@ export function makeRoomCode(): string {
   let code = '';
   for (let i = 0; i < 4; i++) code += alphabet[Math.floor(Math.random() * alphabet.length)];
   return code;
-}
-
-function r3(n: number): number {
-  return Math.round(n * 1000) / 1000;
 }
