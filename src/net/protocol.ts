@@ -26,7 +26,10 @@ export const INTERP_DELAY_SNAPS = 2.5;
 // tab would silently have no voice peer and "Alex can't hear us").
 // b14: dance input bit, asleep flag (fetal curl), NPC-held items (holder num
 // 128+idx), knock events, restart message.
-export const PROTOCOL_VERSION = 14;
+// b15: knock events carry power 0|1|2 (raver/LOUD/bouncer bang) instead of a
+// loud flag; dance is an E-toggle (sim-side edge — wire unchanged); stamina
+// ceiling shrinks (computed from nightT — wire unchanged).
+export const PROTOCOL_VERSION = 15;
 
 // ICE: STUN discovers a direct path between machines; TURN *relays* traffic
 // when hard NATs (phone-hotspot carrier CGNAT, strict office wifi) refuse

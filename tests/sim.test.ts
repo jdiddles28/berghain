@@ -41,7 +41,12 @@ function parkCrowd(sim: Sim): void {
     const z = -1.4 + Math.floor(i / 8) * 0.75;
     npc.body.setTranslation({ x, y: 1.0, z }, true);
     npc.home = { x, z };
+    // PINNED: a parked walker summoned by the bathroom-need scheduler used to
+    // march across live test scenes and bowl the subjects over mid-assert
+    npc.lingerT = 1e9;
+    npc.flowT = 1e9;
   });
+  (sim as unknown as { needTimer: number }).needTimer = 1e9;
 }
 
 /** teleport p0 in front of the booth and take the bag off the stand */
@@ -303,7 +308,7 @@ describe('items — the bag of K', () => {
     // pickups fire on the RMB edge and both bodies idle-sway, so a single
     // one-frame press can catch the cone mid-wobble — press a few times,
     // exactly like a player would
-    for (let tries = 0; tries < 5 && sim.snapshot().items[0].holder !== 'p1'; tries++) {
+    for (let tries = 0; tries < 10 && sim.snapshot().items[0].holder !== 'p1'; tries++) {
       run2(sim, 3, { faceYaw: 0 }, { grab: true, faceYaw: Math.PI, facePitch: -0.28 });
       run2(sim, 3, { faceYaw: 0 }, { faceYaw: Math.PI });
     }

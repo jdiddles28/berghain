@@ -271,6 +271,19 @@ export class ClubberView {
       return;
     }
 
+    if (b.act === 4) {
+      // THE player dance (b15): both hands UP with alternating big pumps,
+      // riding the sim's real side-to-side beat steps — deliberately NOTHING
+      // like the crowd's vertical bounce, so you can pick yourself out mid-
+      // pack. Goofy on purpose (John: fun and funny to someone watching).
+      const side = Math.floor(beat) % 2 === 0 ? 1 : -1;
+      const pump = Math.sin((beat % 1) * Math.PI);
+      this.armL.rotation.set(-2.55 - side * pump * 0.5, 0, 0.5 + side * 0.12);
+      this.armR.rotation.set(-2.55 + side * pump * 0.5, 0, -0.5 + side * 0.12);
+      this.legsWalk(speed);
+      return;
+    }
+
     if (speed > 0.4) {
       const s = Math.sin(this.walkPhase);
       this.armL.rotation.set(s * 0.6, 0, 0.12);
@@ -295,8 +308,8 @@ export class ClubberView {
       this.legsIdle();
       return;
     }
-    if (opts?.dancer || b.act === 4) {
-      // NPC dancers and players holding the dance button share the groove
+    if (opts?.dancer) {
+      // NPC dancers: the light arm groove (their bounce is real physics)
       const g = Math.sin((beat + this.dancePhase) * Math.PI * 2);
       this.armL.rotation.set(-0.25 + g * 0.22, 0, 0.2);
       this.armR.rotation.set(-0.25 - g * 0.22, 0, -0.2);

@@ -34,15 +34,31 @@ export const CONFIG = {
     innerX: -5.9, // stall wall parallel to the x wall
     innerZ: 3.9, // stall wall parallel to the z wall (the door lives here)
     doorHingeX: -6.75, // door hangs off this end of the innerZ wall
-    doorW: 0.8,
+    // 0.8 buried the free edge 1 cm INSIDE the innerX wall collider — the
+    // door was geometrically latched shut and every swing had to pop free of
+    // the wall (NPCs stalled at it for ~10 s). 0.72 leaves a real jamb gap.
+    doorW: 0.72,
     doorH: 2.0,
     doorSpring: 6, // N·m toward closed — stall doors swing shut
     doorDamp: 4,
-    // the queue forms along the innerZ wall, heading +x away from the door
-    queueStart: { x: -5.3, z: 4.7 },
-    queueDx: 0.75,
+    // NPCs push the door open with a HAND when they're at the gap — a capsule
+    // jittering against the thin panel took 10+ s to beat the closing spring.
+    // Small enough that a player's grip or planted body still bars the door
+    // (John: "that's how you can keep the door barred"); minions push harder.
+    doorPush: 26, // N·m
+    doorPushMinion: 60,
+    // the queue is a STRAIGHT line directly in front of the door, heading away
+    // from it into the room (John: "wherever the door faces, they should form
+    // a straight line in front of it"). Slot i: (doorMidX, innerZ − gap0 − i·dx).
+    // gap0 clears the door's outward SWING ARC — slot 0 at 0.85 m put the
+    // front queuer's body against the opening door, pinning it shut and
+    // deadlocking the stall (the leaver could never get out)
+    queueGap0: 1.35,
+    queueDx: 0.7,
     queueSlots: 6,
-    joinRadius: 0.9, // stand this close to the tail slot and you're IN line
+    joinRadius: 0.9, // stand this close to the TAIL slot and you're IN line
+    leaveDist: 1.6, // stray this far from your slot and you've left the line
+    doorClosedAt: 0.35, // rad — the front waits for the door to swing shut
     npcUseTime: [18, 22] as const, // s an NPC spends in the stall (~20, John's test value)
     // GLOBAL arrival rate: one walker decides to go roughly every stall-visit
     // (John's math: 20 s service + 20 s arrivals = a steady 3-4 person line
@@ -59,9 +75,15 @@ export const CONFIG = {
     knockAt: 30, // s the front waiter waits before knocking
     knock2At: 45, // the louder knock
     bargeAt: 60, // front NPC forces the door and drags the occupant out
-    minionAt: 120, // still blocked → a minion comes to do it properly
+    minionAt: 120, // still blocked → the barger goes and FETCHES a bouncer
     minionEvery: 60, // each further minute, one more minion joins
-    dragOutPoint: { x: -4.9, z: 3.0 }, // where the occupant gets dumped
+    dragOutPoint: { x: -4.5, z: 2.2 }, // where the occupant gets dumped (clear of the line)
+    // walking in on an NPC using the stall (John): they turn, angry brows; stay
+    // this long and they leave to fetch a bouncer to drag you out
+    annoyAt: 5,
+    fetchFindDist: 1.3, // this close to a free bouncer = "problem understood"
+    fetchGiveUp: 25, // s an alert-raver spends before giving up (self-righting)
+    protocolHeat: 0.1, // per s a bouncer spends failing to remove you (resisting)
   },
 
   // THE NIGHT — the whole MVP loop. One bar (stamina), a clock, a way to
@@ -71,18 +93,28 @@ export const CONFIG = {
     // midnight → noon (John): one full lap of the hour hand, easy to read.
     // 12 in-game hours over 720 s = 12 real minutes, 1 minute per hour.
     hours: 12,
-    // stamina is a 0..1 bar. Drain RAMPS across the night: early you barely
-    // need anything, by the end you're redosing constantly and riding the
-    // k-hole edge — that escalation is the central conflict.
-    drainStart: 0.004, // fraction/s at open (~4 min a bar)
-    drainEnd: 0.02, // fraction/s at close (~50 s a bar)
+    // THE BAR, b15 redesign (John asked for the full think-through; the
+    // reasoning lives in the b15 report + CLAUDE.md). The night doesn't drain
+    // you faster — it SHRINKS YOUR CEILING. maxStamina slides from maxStart to
+    // maxEnd across the night and the bar's right edge visibly creeps in.
+    // Drain is CONSTANT (readable); a bump refills a fixed absolute chunk
+    // (clamped to the ceiling); being high on K slows the drain. The result:
+    // early, sober play dominates (the refill is small next to a huge bar and
+    // being visibly high draws heat) — late, the only thing that keeps a tiny
+    // bar alive is the drain-slow, which needs felt level 3-4, which needs
+    // redosing every level-decay, which — with the 30 s onset making your true
+    // level illegible — is how you end up riding the k-hole line to noon.
+    drain: 0.0038, // fraction/s, constant (~4.4 min a FULL early bar)
+    maxStart: 1.0,
+    maxEnd: 0.34, // by noon the whole bar is a third of what you opened with
     sprintDrainMult: 3.5, // sprinting burns the bar — you can't run forever
     danceDrainMult: 1.0, // (dancing economy is Build 3)
-    bumpRefill: 0.38, // one bump of K puts this much back in the bar
-    kDrainSlowPerLevel: 0.09, // being high slows the drain — the long ride
+    bumpRefill: 0.24, // one bump: fixed ABSOLUTE refill, clamped to the ceiling
+    kDrainSlowPerLevel: 0.19, // the real late-game value of K: drain × (1 − this·felt)
+    kDrainFloor: 0.2, // deep in it the body still burns a little
     collapseAt: 0.0, // bar empty → you fold up where you stand
-    collapseRegen: 0.012, // fraction/s while collapsed — sleeping it off
-    standAt: 0.3, // enough in the bar to get back on your feet
+    collapseRegen: 0.016, // fraction/s while collapsed — sleeping it off
+    standAtFrac: 0.5, // stand back up at this fraction OF THE CURRENT CEILING
   },
 
   // the Curator's minions: silent, black-clad, patrolling the edges. They
@@ -136,6 +168,15 @@ export const CONFIG = {
     scanEvery: [4, 9] as const, // patrol: pause and sweep the room
     scanFor: [1.5, 3.5] as const,
     hopVel: 3.9, // minions jump a little higher than players (stage is no refuge)
+    // AGGRO (John): piss one off and they LOOK STRAIGHT AT YOU — and keep
+    // staring while the red fades gradually, never snapping back to white
+    aggroDecay: 0.05, // per s — a full glare takes ~20 s to cool
+    aggroGrabRate: 1.2, // per s of being held — near-instant fury
+    aggroThrowHit: 0.75, // instantly, for beaning them
+    aggroTaskRate: 0.12, // per s spent running a removal protocol
+    aggroStareAt: 0.08, // above this a free minion stops and stares at you
+    browsAt: 0.3, // above this the angry brows come out
+    followDist: 1.1, // mode-5 escort: how close they heel to the alerting raver
   },
 
   // Peak-style wobbly body: a DYNAMIC capsule held upright by a limited spring.
@@ -176,6 +217,12 @@ export const CONFIG = {
     airControl: 0.25,
     hopVel: 3.4, // Space — small hop, enough for the 0.45 m stage
     hopCooldown: 0.45,
+
+    // the dance (b15, John): E TOGGLES a dance state — a beat-locked
+    // side-to-side step, deliberately DIFFERENT from the crowd's vertical
+    // every-2-beats bounce, so you can pick yourself out mid-floor. Fun and
+    // funny to watch is the design goal; it still has no gameplay purpose.
+    dance: { sideVel: 0.6, upVel: 1.0 },
 
     // lean into acceleration (Peak-ish anticipation wobble) — subtle; big lean
     // plus floor friction is exactly how you faceplant from jogging
@@ -297,11 +344,19 @@ export const CONFIG = {
     inputReleasePerLevel: 0.24, // s of extra momentum AFTER you release a key
     driftAngPerLevel: 0.11, // rad the move direction slowly skews sideways per level
     driftHz: 0.21,
-    // visuals, per felt-level (client-side, own player only):
-    blurPerLevel: 0.75, // px
-    darkenPerLevel: 0.065,
-    viewSway: 0.013, // rad of slow camera sway per level
+    // visuals, per felt-level (client-side, own player only). The intensity
+    // CURVE is superlinear (kv = k²/4): level 2 is very restrained, 3 is
+    // "wait, is the room moving?", 4 is a good bit (John's hallucination
+    // staircase). The looks are real K phenomenology: motion trails/ghosting,
+    // breathing walls, tunnel vision, washed-out color.
+    blurPerLevel: 0.75, // px (× the curved level)
+    darkenPerLevel: 0.06,
+    viewSway: 0.013, // rad of slow camera sway per felt level
     kholeBlur: 7, // px — the world smears out when you go down
+    trailFrom: 2.2, // felt level where motion trails (frame feedback) begin
+    trailMax: 0.5, // fraction of the previous frame kept at level 5
+    breatheFrom: 2.4, // the room starts gently swelling/shrinking
+    vignetteFrom: 2.6, // tunnel vision creeps in
   },
 
   crowd: {

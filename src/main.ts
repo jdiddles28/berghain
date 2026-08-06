@@ -3,7 +3,7 @@
 import { ClubAudio } from './audio';
 import { CONFIG } from './config';
 import { Input } from './input';
-import { targetItemIndex } from './sim/types';
+import { maxStamina, targetItemIndex } from './sim/types';
 import { ClientSession } from './net/client';
 import { HostSession } from './net/host';
 import type { Session } from './net/session';
@@ -16,6 +16,7 @@ const app = document.getElementById('app')!;
 const hud = document.getElementById('hud')!;
 const stambox = document.getElementById('stambox')!;
 const stamfill = document.getElementById('stamfill')!;
+const stamcap = document.getElementById('stamcap')!;
 const bigmsg = document.getElementById('bigmsg')!;
 const bigmsgText = document.getElementById('bigmsgText')!;
 const btnRestart = document.getElementById('btnRestart') as HTMLButtonElement;
@@ -87,9 +88,13 @@ async function start(mode: 'host' | 'join'): Promise<void> {
       if (meSnap) voice.update(dt, frame, input.camYaw, input.camPitch, session.localId);
       // THE bar + the night's endings
       if (meSnap) {
+        // THE bar (b15): the fill is absolute, and the night eats the bar's
+        // right edge — by noon a "full tank" is a third of what it was
+        const stamMax = maxStamina(frame.nightT);
         stambox.style.display = 'block';
         stamfill.style.width = `${Math.round(meSnap.stam * 100)}%`;
-        stamfill.style.background = meSnap.stam < 0.25 ? '#e0484f' : '#cfd2dc';
+        stamcap.style.width = `${Math.round((1 - stamMax) * 100)}%`;
+        stamfill.style.background = meSnap.stam < 0.3 * stamMax ? '#e0484f' : '#cfd2dc';
         if (meSnap.out) {
           bigmsg.style.display = 'flex';
           bigmsgText.textContent = 'ESCORTED OUT\nthe Curator has seen enough';

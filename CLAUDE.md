@@ -106,15 +106,61 @@ designs and playtests. Status: **pre-prototype — nothing has been built yet.**
 ## Controls (Build 1)
 
 WASD camera-relative move (body yaw-servos to face travel), mouse look (FP), Space hop.
-V toggles the voice-chat mic mute. Hold E = dance: the same genuine beat-bounce the NPC
-dancers do (b14 — no gameplay purpose yet by design; it exists so hiding in the crowd reads).
+V toggles the voice-chat mic mute. E = dance TOGGLE (b15): a beat-locked side-to-side
+step with big alternating overhead arm pumps — deliberately unlike the crowd's vertical
+every-2-beats bounce so you can pick yourself out mid-pack. Moving/hopping/grabbing/dosing
+cancels it. Still no gameplay purpose by design.
 RMB = grab: items first (Peak-style look-highlight pickup, incl. snatching from hands),
 else the universal body/wall grip (soft spring, no joints). LMB = USE what's held (hold to
 bump from the K bag). Q = tap to drop, hold to charge a throw. No shove — John cut it (b10);
 sprint body checks are the violence now. John ruled grab stays on RMB ("left click seems so
 select focused, the action to grab should feel more intentional").
 
-## b14 systems (the current build)
+## b15 systems (the current build)
+
+- **THE LINE SYSTEM is modular** (John: "lines will be a foundational part of the feel of
+  this game… get the foundations right now"): `src/sim/linePath.ts` lays out a train of
+  invisible standing squares from a service point — each square must be STANDABLE (a
+  clearance probe vs static geometry), and a blocked continuation makes the line BEND,
+  preferring its previous turn direction so it wraps corners. The bathroom queue is the
+  first instance; membership etiquette (join at the BACK only, hold your slot, leave the
+  train or get floored = lose your place, only the front moves on the door, ONE claimant
+  at a time, front waits for stall-empty + door-closed) is line-agnostic. Full flow +
+  fallback table: `docs/bathroom-etiquette.md` — keep it in sync with the sim.
+- **Raver-alert machine** (walker mode 6 + minion mode 5): pissed-off clubgoer stares
+  (angry brows) → walks to the nearest free bouncer → "problem understood. Now following"
+  → raver LEADS the bouncer back to the incident → bouncer knocks power-2 (much louder)
+  and runs the removal protocol on whoever is in the stall NOW. Triggers: walking in on a
+  stall occupant for > `annoyAt` (their business PAUSES while you stand there), and the
+  camper ladder's first minion (the barger fetches embodied; timers backstop everything).
+  Resisting a removal accrues `protocolHeat` — leave promptly and nothing sticks.
+- **Minion aggro**: per-minion slow-cooling fury (`aggro`/`aggroTarget`) fed by being
+  grabbed/beaned/flooring-them/running removals. A hot free minion stops dead and STARES
+  at the offender; head redness = max(job, aggro) so it fades GRADUALLY, brows past
+  `browsAt`. Never snaps back to white (John).
+- **Honest hands**: no NPC grip connects through solid geometry (`handsCanReach` ray) —
+  fixed the b14 through-wall barger grab. NPCs never grab the door; they push in with a
+  hand-torque (`doorPush`, minions harder) + body — a player's grip or planted body still
+  bars the door. doorW 0.72: at 0.8 the free edge sat INSIDE the innerX wall collider and
+  the door was geometrically latched (NPCs stalled ~10 s per swing).
+- **Stamina economy**: drain is CONSTANT; the night shrinks the CEILING
+  (`maxStamina(nightT)`: maxStart→maxEnd, HUD dead-zone eats the bar's right edge). Bump =
+  fixed absolute refill clamped to the ceiling; felt K level slows drain (kDrainSlowPerLevel,
+  floor kDrainFloor) — the late game is riding level 3-4 with 30 s onset making your true
+  level illegible. standAtFrac is relative to the current ceiling.
+- **K hallucination staircase**: audio tiers (quiet rare at ~2 / clearly-audible at ~3 /
+  frequent + unease drone at 4+; whispers, ghost replays, PHANTOM KNOCKS) and superlinear
+  visuals (kv=k²/4): motion trails (no-clear frame feedback, preserveDrawingBuffer),
+  breathing scale pulse, tunnel vignette (#kvig), desaturation, hue drift at 4.
+- **Sleep**: collapse tips the body over + keel-torque fallback — ALWAYS horizontal fetal.
+  Sleepers get NOTICED: the minion view cone is waived for a body on the floor (LOS still
+  honest) — sleeping in the open draws the walk of shame; the stall stays the safe nap.
+- Knock SFX: 3 tiers (power 0/1/2) with a woody door-resonance layer; power 2 is the
+  bouncer's arrival BANG with a frame boom. Clock hands run CLOCKWISE (sign flip).
+- Walker spawn de-overlap (random circuit spawns seeded t=0 knockdown avalanches) + flow
+  walkers steer around the queue's occupied squares.
+
+## b14 systems
 
 - **Kick asymmetry**: the check victim eats the full kick impulse; a GROUNDED attacker takes
   `attackerGroundShare` (staggers, stays up), an airborne one (sprint-jump) takes it all and

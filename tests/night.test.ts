@@ -18,7 +18,8 @@ function run(sim: Sim, steps: number, input: Partial<PlayerInput> = {}, id = 'p0
   }
 }
 
-/** park everyone far from the action in the +x half */
+/** park everyone far from the action in the +x half — PINNED (a scheduler-
+ *  summoned walker used to march through live scenes and floor the subjects) */
 function parkCrowdFar(sim: Sim, except?: Character): void {
   sim.npcs.forEach((npc, i) => {
     if (npc === except) return;
@@ -26,7 +27,10 @@ function parkCrowdFar(sim: Sim, except?: Character): void {
     const z = -0.5 + Math.floor(i / 8) * 0.75;
     npc.body.setTranslation({ x, y: 1.0, z }, true);
     npc.home = { x, z };
+    npc.lingerT = 1e9;
+    npc.flowT = 1e9;
   });
+  (sim as unknown as { needTimer: number }).needTimer = 1e9;
 }
 
 function aMinion(sim: Sim): Character {
@@ -76,8 +80,13 @@ describe('the night', () => {
     run(sim, 60 * 3);
     expect(ch.staminaDown).toBe(true);
     expect(sim.snapshot().players['p0'].st).toBe(1); // folded up on the spot
+    // sleep is HORIZONTAL (John): never a balanced-upright "standing sleeper"
+    run(sim, 90);
+    const upY = (q: { x: number; y: number; z: number; w: number }) =>
+      1 - 2 * (q.x * q.x + q.z * q.z);
+    expect(upY(sim.snapshot().players['p0'].rot)).toBeLessThan(0.6);
     // sleeping it off: the bar creeps back and you eventually stand
-    run(sim, Math.ceil(60 * (CONFIG.night.standAt / CONFIG.night.collapseRegen + 8)));
+    run(sim, Math.ceil(60 * (CONFIG.night.standAtFrac / CONFIG.night.collapseRegen + 8)));
     expect(ch.staminaDown).toBe(false);
     expect(sim.snapshot().players['p0'].st).toBe(0);
   });
@@ -196,9 +205,10 @@ describe('the night', () => {
     // line-cut fast path is a separate behavior)
     p.body.setTranslation({ x: -7.2, y: 0.85, z: 5.0 }, true);
     run(sim, 15);
-    // now a walker arrives and waits at the front slot
+    // now a walker arrives and waits at the front slot (straight out from
+    // the door: b15 queue geometry)
     const w = sim.npcs.filter((n) => !n.isMinion && !n.isDJ && !n.isDancer)[0];
-    w.body.setTranslation({ x: -5.3, y: 1.0, z: 4.7 }, true);
+    w.body.setTranslation({ x: -6.35, y: 1.0, z: 2.55 }, true);
     sim.queue.push(w);
     w.walkerMode = 1;
     let knocks = 0;
@@ -221,7 +231,7 @@ describe('the night', () => {
     blindMinions(sim);
     // the line exists FIRST
     const w = sim.npcs.filter((n) => !n.isMinion && !n.isDJ && !n.isDancer)[0];
-    w.body.setTranslation({ x: -5.3, y: 1.0, z: 4.7 }, true);
+    w.body.setTranslation({ x: -6.35, y: 1.0, z: 2.55 }, true);
     sim.queue.push(w);
     w.walkerMode = 1;
     // the player waltzes straight past them into the stall

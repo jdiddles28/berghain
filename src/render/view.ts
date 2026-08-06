@@ -24,18 +24,43 @@ export class View {
   private strobe: THREE.PointLight;
   private lastTime = 0;
   private lastFilter = '';
+  private lastTransform = '';
+  private fadeScene = new THREE.Scene();
+  private fadeCam!: THREE.OrthographicCamera;
+  private fadeMat!: THREE.MeshBasicMaterial;
+  private sceneBg: THREE.Color | null = null;
+  private vignette = document.getElementById('kvig');
+  private lastVigOpacity = '';
   private doorPivot!: THREE.Group;
   private clockHour!: THREE.Mesh;
   private clockMin!: THREE.Mesh;
 
   constructor(container: HTMLElement) {
-    this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'low-power' });
+    // preserveDrawingBuffer: the K motion-trail effect works by NOT clearing
+    // the previous frame and fading it instead — the classic dissociative
+    // ghosting/tracer look, nearly free on the GPU
+    this.renderer = new THREE.WebGLRenderer({
+      antialias: true,
+      powerPreference: 'low-power',
+      preserveDrawingBuffer: true,
+    });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     container.appendChild(this.renderer.domElement);
 
     this.scene.background = new THREE.Color(0x030308);
     this.scene.fog = new THREE.Fog(0x030308, 6, 26);
+
+    // the fade quad that eats old frames when trails are on
+    this.fadeCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+    this.fadeMat = new THREE.MeshBasicMaterial({
+      color: 0x030308,
+      transparent: true,
+      opacity: 1,
+      depthTest: false,
+      depthWrite: false,
+    });
+    this.fadeScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this.fadeMat));
 
     this.camera = new THREE.PerspectiveCamera(
       CONFIG.camera.fov,
@@ -323,9 +348,15 @@ export class View {
         // and legs SHOW — look down and your legs are stepping (John)
         if (id === localId) cv.setFirstPersonBody();
         else cv.setBodyVisible(true);
-        // own arms only appear when they're DOING something (hold/reach/grip)
+        // own arms only appear when they're DOING something (hold/reach/grip/
+        // dance — your own hands pump at the edges of the frame)
         cv.setArmsVisible(
-          id !== localId || b.act === 1 || b.act === 3 || b.gripPoint !== null || holding !== null,
+          id !== localId ||
+            b.act === 1 ||
+            b.act === 3 ||
+            b.act === 4 ||
+            b.gripPoint !== null ||
+            holding !== null,
         );
       }
     }
@@ -361,8 +392,10 @@ export class View {
     this.doorPivot.rotation.y = frame.doorAngle;
     const N = CONFIG.night;
     const hoursIn = (frame.nightT / N.length) * N.hours; // opened at midnight Sat
-    this.clockHour.rotation.z = -((hoursIn % 12) / 12) * Math.PI * 2;
-    this.clockMin.rotation.z = -((hoursIn % 1) * Math.PI * 2);
+    // positive rotation.z: seen from inside the room (looking at the +z wall)
+    // that sweeps CLOCKWISE — the negative sign ran the night backwards (John)
+    this.clockHour.rotation.z = ((hoursIn % 12) / 12) * Math.PI * 2;
+    this.clockMin.rotation.z = (hoursIn % 1) * Math.PI * 2;
 
     // light rig rides the beat
     const beatFrac = frame.beat - Math.floor(frame.beat);
@@ -422,19 +455,66 @@ export class View {
         ),
       );
 
-      // blur + darken on a CSS filter — free on the GPU compositor, and it
-      // reads instantly as "I am NOT sober". K-hole: the world smears out.
+      // CSS-side K phenomenology (all compositor-cheap). The intensity curve
+      // is SUPERLINEAR (kv = k²/4): level 2 restrained, 3 unmistakable, 4 a
+      // good bit (John's staircase). Real-K looks: washed-out color, darkened
+      // tunnel vision (the #kvig radial overlay), the room BREATHING (a slow
+      // scale pulse), a hue drift deep in it.
+      const kv = (k * k) / 4;
       const inHole = me.st === 1 && k >= K.maxLevel - 0.8;
-      const blur = inHole ? K.kholeBlur : k * K.blurPerLevel;
-      const bright = Math.max(0.45, 1 - K.darkenPerLevel * k - (inHole ? 0.2 : 0));
+      const blur = inHole ? K.kholeBlur : kv * K.blurPerLevel;
+      const bright = Math.max(0.45, 1 - K.darkenPerLevel * kv - (inHole ? 0.2 : 0));
+      const sat = Math.max(0.55, 1 - 0.07 * kv);
+      const hue =
+        k > 3.6 ? ` hue-rotate(${Math.round(Math.sin(frame.time * 0.23) * 13 * (k - 3.6))}deg)` : '';
       const filter =
         k > 0.06
-          ? `blur(${blur.toFixed(1)}px) brightness(${bright.toFixed(2)}) saturate(${(1 + 0.12 * k).toFixed(2)})`
+          ? `blur(${blur.toFixed(1)}px) brightness(${bright.toFixed(2)}) saturate(${sat.toFixed(2)})${hue}`
           : '';
       if (filter !== this.lastFilter) {
         this.lastFilter = filter;
         this.renderer.domElement.style.filter = filter;
       }
+      const breathe =
+        k > K.breatheFrom
+          ? 1 + 0.007 * Math.sin(frame.time * 1.9) * Math.min(1, (k - K.breatheFrom) / 1.6)
+          : 0;
+      const transform = breathe > 0 ? `scale(${breathe.toFixed(4)})` : '';
+      if (transform !== this.lastTransform) {
+        this.lastTransform = transform;
+        this.renderer.domElement.style.transform = transform;
+      }
+      if (this.vignette) {
+        const vig = Math.min(1, Math.max(0, (k - K.vignetteFrom) / 2.4)) * 0.75;
+        const vigStr = vig.toFixed(2);
+        if (vigStr !== this.lastVigOpacity) {
+          this.lastVigOpacity = vigStr;
+          (this.vignette as HTMLElement).style.opacity = vigStr;
+        }
+      }
+
+      // motion trails: keep a fraction of the previous frame (ghosting /
+      // tracers — THE ketamine visual). scene.background must not repaint
+      // over the old frame, so it's parked while trails run.
+      const trail =
+        Math.min(1, Math.max(0, (k - K.trailFrom) / (5 - K.trailFrom))) * K.trailMax;
+      if (trail > 0.02) {
+        if (!this.sceneBg) {
+          this.sceneBg = this.scene.background as THREE.Color;
+          this.scene.background = null;
+        }
+        this.renderer.autoClear = false;
+        this.fadeMat.opacity = 1 - trail;
+        this.renderer.clearDepth();
+        this.renderer.render(this.fadeScene, this.fadeCam);
+        this.renderer.render(this.scene, this.camera);
+        return;
+      }
+      if (this.sceneBg) {
+        this.scene.background = this.sceneBg;
+        this.sceneBg = null;
+      }
+      this.renderer.autoClear = true;
     }
 
     this.renderer.render(this.scene, this.camera);

@@ -27,7 +27,7 @@ export interface PlayerInput {
   grab: boolean; // held (RMB) — items first, then the universal body-grab
   use: boolean; // held (LMB) — using what's in your hand (bumping the bag)
   drop: boolean; // held (Q) — tap: drop. hold: charge a throw, release to loose it
-  dance: boolean; // held (E) — bounce with the crowd on the beat (no purpose yet, John)
+  dance: boolean; // E held — the sim TOGGLES the dance state on the press edge
 }
 
 export const ZERO_INPUT: PlayerInput = {
@@ -106,7 +106,9 @@ export type GameEvent =
   | { t: 'throw'; x: number; y: number; z: number }
   | { t: 'dose'; x: number; y: number; z: number } // sniff
   | { t: 'eject'; x: number; y: number; z: number } // someone got walked out
-  | { t: 'knock'; x: number; y: number; z: number; loud: boolean }; // the front of the line wants IN
+  // the front of the line wants IN. power 0: a polite rap · 1: LOUDER ·
+  // 2: a bouncer's fist — much louder and more aggressive than any raver's
+  | { t: 'knock'; x: number; y: number; z: number; power: 0 | 1 | 2 };
 
 export interface RenderFrame {
   time: number;
@@ -117,6 +119,16 @@ export interface RenderFrame {
   players: Record<string, BodySnap>;
   npcs: BodySnap[];
   items: ItemSnap[];
+}
+
+/** THE bar's ceiling (b15): the night doesn't drain you faster — it shrinks
+ *  what a full tank even IS. Shared by the sim (clamping) and the HUD (the
+ *  bar's right edge visibly creeps in), computed from nightT so it needs no
+ *  wire field. */
+export function maxStamina(nightT: number): number {
+  const N = CONFIG.night;
+  const prog = Math.min(1, Math.max(0, nightT / N.length));
+  return N.maxStart + (N.maxEnd - N.maxStart) * prog;
 }
 
 /** Peak-style pickup targeting: which item is under the look ray? Shared by

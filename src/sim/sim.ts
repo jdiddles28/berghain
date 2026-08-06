@@ -11,7 +11,9 @@
 
 import RAPIER from '@dimforge/rapier3d-compat';
 import { CONFIG } from '../config';
+import { LinePath } from './linePath';
 import {
+  maxStamina,
   targetItemIndex,
   ZERO_INPUT,
   type BodySnap,
@@ -100,22 +102,40 @@ export class Character {
   isDancer = false;
   isMinion = false; // the Curator's: silent, black-clad, watching
   // patrol · scanning pause · hunting (drag to the EXIT) · shooing off the
-  // DJ stand (drag to the floor) · stall barge (drag the camper out)
-  minionMode: 0 | 1 | 2 | 3 | 4 = 0;
+  // DJ stand (drag to the floor) · stall barge (drag the camper out) ·
+  // following an alerting raver back to an incident ("problem understood")
+  minionMode: 0 | 1 | 2 | 3 | 4 | 5 = 0;
   scanYaw: number | null = null;
   scanT = 0;
   huntTarget: Character | null = null;
   losLostT = 0; // hunt memory: fully break line of sight for long enough → dropped
+  followRaver: Character | null = null; // mode 5: the clubgoer they're heeling to
+  bangDone = false; // stall protocol: the arrival BANG on the door fires once
+  // AGGRO (John): personal irritation, 0..1. Rises when grabbed/beaned/worked;
+  // decays SLOWLY — and while it's hot they stare straight at whoever did it,
+  // the red head fading gradually back to white. Never snaps.
+  aggro = 0;
+  aggroTarget: Character | null = null;
   // walker flow: position on the lap circuit
   loopAng = 0;
   loopDir = 1;
   lingerT = 0;
   flowT = 0;
-  // walker bathroom need. mode 5 = barging the stall (dragging the camper out)
-  walkerMode: 0 | 1 | 2 | 3 | 4 | 5 = 0; // flow · queueing · entering · in stall · leaving · barge
+  // walker bathroom need. mode 5 = barging the stall (dragging the camper
+  // out). mode 6 = ALERTING: fetching a bouncer and leading it back (John's
+  // raver-tells-on-you state machine — the only problem type today is
+  // hogging the bathroom, but the machine is general).
+  walkerMode: 0 | 1 | 2 | 3 | 4 | 5 | 6 = 0; // flow · queueing · entering · in stall · leaving · barge · alerting
   stallT = 0;
+  modeT = 0; // time in the current walkerMode — every mode has a timeout fallback
+  annoyT = 0; // occupant: how long an intruder has been standing in MY stall
+  alertPhase: 0 | 1 | 2 = 0; // alerting: seeking a bouncer · leading it back
+  alertTarget: Character | null = null; // who pissed them off
+  stareYaw: number | null = null; // face THIS way while standing (annoyed stare)
   knockAnimT = 0; // arm-rap animation window (act 5)
-  dancingNow = false; // player holding the dance button (act 4)
+  dancingNow = false; // player's dance state is ON (act 4)
+  danceOn = false; // the E-toggle latch
+  prevDance = false; // toggle fires on the press edge
   enteredFairAt = -100; // last sim-time this player entered the stall FROM the front of the line
 
   constructor(
@@ -163,6 +183,9 @@ export class Sim {
   /** the bathroom line, NPCs and players alike, front first — REAL data
    *  (John): who is in line for the door is tracked, not vibes */
   queue: Character[] = [];
+  /** the bathroom line's invisible squares (see linePath.ts — John's modular
+   *  line system; the bathroom is the first instance of it, not a special) */
+  bathroomLine!: LinePath;
   /** global bathroom-need scheduler: one walker joins roughly per stall visit */
   private needTimer = randRange(...CONFIG.bathroom.needEvery);
   // STALL PRESSURE: the anti-camping escalation (knock → knock louder →
@@ -184,6 +207,20 @@ export class Sim {
     this.world = new RAPIER.World({ x: 0, y: -9.81, z: 0 });
     this.world.timestep = CONFIG.sim.dt;
     this.buildRoom();
+    // one static-only step (no characters exist yet) so rapier builds its
+    // query pipeline — LinePath's standability probes see nothing otherwise
+    this.world.step();
+    // the line's invisible squares, laid out AFTER the room exists so they
+    // can feel the walls: straight out from the stall door, snaking around
+    // anything in the way (nothing, in this room — but the system doesn't
+    // know that, which is the point)
+    const B = CONFIG.bathroom;
+    this.bathroomLine = new LinePath(
+      this.world,
+      { x: B.doorMidX, z: B.innerZ - B.queueGap0 },
+      { x: 0, z: -1 },
+      { spacing: B.queueDx, count: B.queueSlots, clearance: 0.4 },
+    );
     this.spawnCrowd();
     this.spawnItems();
   }
@@ -287,9 +324,11 @@ export class Sim {
     return p.x < CONFIG.bathroom.innerX - 0.1 && p.z > CONFIG.bathroom.innerZ + 0.1;
   }
 
+  /** queue slot i: an invisible square of the bathroom's LinePath — straight
+   *  out in front of the door here, but the geometry is the modular line
+   *  system's business, not the bathroom's (John: get the foundations right) */
   private slotPos(i: number): { x: number; z: number } {
-    const B = CONFIG.bathroom;
-    return { x: B.queueStart.x + i * B.queueDx, z: B.queueStart.z };
+    return this.bathroomLine.slot(i);
   }
 
   private stallOccupied(): boolean {
@@ -312,16 +351,29 @@ export class Sim {
       accelGain: C.accelGain,
       maxAccel: C.maxAccel,
     };
+    const taken: { x: number; z: number }[] = [];
     for (let i = 0; i < C.count; i++) {
       // dancers spawn packed in the dance zone, walkers on the lap circuit,
       // and the LAST index is the DJ behind the board
       const isDJ = i === C.count - 1;
-      const walkerAng = Math.random() * Math.PI * 2;
-      const spot = isDJ
+      let walkerAng = Math.random() * Math.PI * 2;
+      let spot = isDJ
         ? { x: CONFIG.room.dj.x, z: CONFIG.room.dj.z }
         : i < C.dancers
           ? this.danceSpot(i)
           : this.flowSpot(walkerAng);
+      if (!isDJ && i >= C.dancers) {
+        // random circuit angles occasionally landed two walkers inside each
+        // other — the solver blast-apart seeded a t=0 knockdown avalanche
+        // (same bug the dancers had before the sunflower layout)
+        for (let tries = 0; tries < 24; tries++) {
+          const clear = taken.every((t) => Math.hypot(t.x - spot.x, t.z - spot.z) > 0.7);
+          if (clear) break;
+          walkerAng = Math.random() * Math.PI * 2;
+          spot = this.flowSpot(walkerAng);
+        }
+      }
+      taken.push(spot);
       const isMinion = !isDJ && i >= C.dancers + C.walkers;
       // minions get their own BIG body (CONFIG.curator.body) — the bulk is
       // what makes them out-pull a walking player in the drag tug-of-war
@@ -493,6 +545,19 @@ export class Sim {
       { x: 0, y: -dAng * B.doorSpring - this.doorBody.angvel().y * B.doorDamp, z: 0 },
       true,
     );
+    // NPCs at the gap shoulder the door open with a hand (never a pull —
+    // John's rule — and weak enough that a player's grip or planted body
+    // still bars it). Sign: outside pushes swing the door negative.
+    for (const n of this.npcs) {
+      const pushing =
+        n.walkerMode === 2 || n.walkerMode === 4 || n.walkerMode === 5 || n.minionMode === 4;
+      if (!pushing || n.state !== 0) continue;
+      const np = n.pos();
+      if (Math.hypot(np.x - B.doorMidX, np.z - B.innerZ) < 0.75) {
+        const mag = n.isMinion ? B.doorPushMinion : B.doorPush;
+        this.doorBody.addTorque({ x: 0, y: np.z < B.innerZ ? -mag : mag, z: 0 }, true);
+      }
+    }
 
     for (const [id, ch] of this.players) {
       this.updateCharacter(ch, inputs.get(id) ?? ZERO_INPUT, dt);
@@ -641,19 +706,44 @@ export class Sim {
       ch.hopCd = CONFIG.body.hopCooldown;
     }
 
-    // dance (hold E): the same genuine beat-bounce the NPC dancers do — no
-    // purpose yet (John: it just needs to exist so hiding in the crowd reads).
-    // Moving cancels it; the bounce itself is real physics, not an animation.
-    ch.dancingNow =
-      ch.isPlayer && input.dance && ch.state === 0 && Math.hypot(input.moveX, input.moveZ) < 0.1;
-    if (ch.dancingNow && grounded) {
-      const C = CONFIG.crowd;
-      const beatLen = 60 / CONFIG.music.bpm;
-      const beatNum = Math.floor(this.time / beatLen);
-      const prevBeatNum = Math.floor((this.time - dt) / beatLen);
-      if (beatNum !== prevBeatNum && beatNum % C.danceEveryBeats === 0) {
-        const lv = ch.body.linvel();
-        ch.body.setLinvel({ x: lv.x, y: Math.max(lv.y, C.bounceVel), z: lv.z }, true);
+    // dance (b15, John): E TOGGLES the state — no held key fighting WASD —
+    // and the move is DIFFERENT from the crowd's: a beat-locked side-to-side
+    // step (every beat, lateral) where the crowd bounces vertically every
+    // TWO beats. Even mid-pack you can pick yourself out. Moving, hopping,
+    // grabbing, or dosing cancels it. Still real physics, no purpose yet.
+    if (ch.isPlayer) {
+      if (input.dance && !ch.prevDance) ch.danceOn = !ch.danceOn;
+      ch.prevDance = input.dance;
+      if (
+        ch.state !== 0 ||
+        Math.hypot(input.moveX, input.moveZ) > 0.15 ||
+        input.hop ||
+        input.grab ||
+        ch.dosing
+      ) {
+        ch.danceOn = false;
+      }
+      ch.dancingNow = ch.danceOn;
+      if (ch.dancingNow && grounded) {
+        const D = CONFIG.body.dance;
+        const beatLen = 60 / CONFIG.music.bpm;
+        const beatNum = Math.floor(this.time / beatLen);
+        const prevBeatNum = Math.floor((this.time - dt) / beatLen);
+        if (beatNum !== prevBeatNum) {
+          const side = beatNum % 2 === 0 ? 1 : -1;
+          // step to your own right, then left, relative to where you look
+          const rx = Math.cos(input.faceYaw);
+          const rz = -Math.sin(input.faceYaw);
+          const lv = ch.body.linvel();
+          ch.body.setLinvel(
+            {
+              x: lv.x * 0.25 + rx * side * D.sideVel,
+              y: Math.max(lv.y, D.upVel),
+              z: lv.z * 0.25 + rz * side * D.sideVel,
+            },
+            true,
+          );
+        }
       }
     }
 
@@ -729,37 +819,51 @@ export class Sim {
           ch.useT = 0;
           ch.holding.doses--;
           ch.kPending.push(this.time + KT.onsetDelay);
-          // the POINT of the bump: the bar comes back
-          ch.stamina = Math.min(1, ch.stamina + CONFIG.night.bumpRefill);
+          // the refill: a fixed absolute chunk, clamped to the night's
+          // shrinking ceiling — late-game overshoot is simply wasted
+          ch.stamina = Math.min(maxStamina(this.nightT), ch.stamina + CONFIG.night.bumpRefill);
         }
       }
     }
     ch.prevUse = input.use;
   }
 
-  /** THE bar. Drain ramps across the night (the central conflict: early you
-   *  barely need anything, by the end you're redosing constantly). Sprinting
-   *  burns it. Being high slows it. Empty = you fold up and sleep where you
-   *  stand — eject bait — until it creeps back over the stand threshold. */
+  /** THE bar, b15 economy (the full reasoning: CLAUDE.md + the b15 report).
+   *  Drain is CONSTANT — what escalates is the CEILING: maxStamina shrinks
+   *  across the night, so a "full tank" means less and less. K's refill is a
+   *  fixed absolute chunk (worth little against a big early bar, most of a
+   *  late one) and the felt level slows the drain — which is the only thing
+   *  that keeps the tiny end-of-night bar alive. Empty = you fold up and
+   *  sleep where you stand — eject bait — until it creeps back. */
   private updateStamina(ch: Character, input: PlayerInput, dt: number): void {
     const N = CONFIG.night;
+    const max = maxStamina(this.nightT);
     if (ch.state === 1) {
       if (ch.staminaDown) {
-        ch.stamina = Math.min(1, ch.stamina + N.collapseRegen * dt);
-        if (ch.stamina >= N.standAt) ch.staminaDown = false;
+        ch.stamina = Math.min(max, ch.stamina + N.collapseRegen * dt);
+        if (ch.stamina >= N.standAtFrac * max) ch.staminaDown = false;
+        // sleep is HORIZONTAL (John): an unsprung capsule can balance
+        // upright by accident — keel it over until it's actually lying down
+        const up = rotateVec(ch.body.rotation(), { x: 0, y: 1, z: 0 }).y;
+        if (up > 0.6) {
+          const yaw = yawOf(ch.body.rotation());
+          ch.body.addTorque({ x: Math.cos(yaw) * 160, y: 0, z: -Math.sin(yaw) * 160 }, true);
+        }
       }
       return; // ragdolls don't burn the bar
     }
     if (this.phase === 1) return;
-    const prog = Math.min(1, this.nightT / N.length);
-    let drain =
-      (N.drainStart + (N.drainEnd - N.drainStart) * prog) *
-      Math.max(0.35, 1 - N.kDrainSlowPerLevel * ch.kFelt);
+    ch.stamina = Math.min(ch.stamina, max); // the night grinds the ceiling down
+    let drain = N.drain * Math.max(N.kDrainFloor, 1 - N.kDrainSlowPerLevel * ch.kFelt);
     if (input.sprint && Math.hypot(input.moveX, input.moveZ) > 0.1) drain *= N.sprintDrainMult;
     ch.stamina = Math.max(0, ch.stamina - drain * dt);
     if (ch.stamina <= N.collapseAt && !ch.staminaDown) {
       ch.staminaDown = true;
       this.knockDown(ch);
+      // tip over on the spot — consistently a body on the floor, never a
+      // balanced-upright "standing sleeper"
+      const yaw = yawOf(ch.body.rotation());
+      ch.body.applyTorqueImpulse({ x: Math.cos(yaw) * 40, y: 0, z: -Math.sin(yaw) * 40 }, true);
     }
   }
 
@@ -836,6 +940,7 @@ export class Sim {
     else if (Math.hypot(input.moveX, input.moveZ) > 0.1)
       targetYaw = Math.atan2(input.moveX, input.moveZ);
     else if (ch.isMinion && ch.scanYaw !== null) targetYaw = ch.scanYaw; // sweeping the room
+    else if (ch.stareYaw !== null) targetYaw = ch.stareYaw; // glaring at someone (annoyed)
     else if (ch.isDJ) targetYaw = 0; // behind the decks, facing the floor (+z)
     else if (ch.isDancer) {
       // every dancer faces the decks (John) — the floor points AT the DJ
@@ -901,8 +1006,11 @@ export class Sim {
     if (ch.checkedBy && this.time - ch.checkedAt < 1.5 && this.phase === 0) {
       if (ch.isMinion) {
         // flooring one of the Curator's own = grounds for expulsion, no
-        // witnesses needed — the minion FELT it (John's ruling)
+        // witnesses needed — the minion FELT it (John's ruling), and it is
+        // now maximally, personally furious at you
         ch.checkedBy.heat = Math.max(ch.checkedBy.heat, CONFIG.curator.ejectAt);
+        ch.aggro = 1;
+        ch.aggroTarget = ch.checkedBy;
       } else {
         // flooring a clubber with a minion watching = an instant chunk of heat
         for (const m of this.npcs) {
@@ -1250,6 +1358,32 @@ export class Sim {
       hz = tgt.z - p.z;
       hd = Math.hypot(hx, hz) || 1;
     }
+    // people walk AROUND the bathroom line, not through it — lapping straight
+    // through the queue bowled queuers over (floored front = a deadlocked
+    // door). Works on the line's actual occupied squares, whatever shape the
+    // LinePath took, so it generalizes to every future line.
+    if (this.queue.length > 0) {
+      let nx = 0;
+      let nz = 0;
+      let nd = Infinity;
+      for (let i = 0; i < this.queue.length; i++) {
+        const s = this.slotPos(i);
+        const d = Math.hypot(p.x - s.x, p.z - s.z);
+        if (d < nd) {
+          nd = d;
+          nx = s.x;
+          nz = s.z;
+        }
+      }
+      if (nd < 1.1) {
+        // shoulder PAST the line: blend in a push directly away from it
+        const ax = (p.x - nx) / (nd || 1);
+        const az = (p.z - nz) / (nd || 1);
+        hx = hx / hd + ax * 1.5;
+        hz = hz / hd + az * 1.5;
+        hd = Math.hypot(hx, hz) || 1;
+      }
+    }
     input.moveX = (hx / hd) * mult;
     input.moveZ = (hz / hd) * mult;
   }
@@ -1312,16 +1446,35 @@ export class Sim {
     return d;
   }
 
+  /** exactly ONE body may be moving on the door at a time — the front of the
+   *  line waits until the previous occupant is fully out, the door has swung
+   *  shut, and nobody is mid-entry / mid-barge / mid-removal (John) */
+  private doorClaimed(): boolean {
+    const B = CONFIG.bathroom;
+    if (this.stallOccupied()) return true;
+    if (Math.abs(this.doorAngle()) > B.doorClosedAt) return true;
+    for (const n of this.npcs) {
+      if (n.walkerMode === 2 || n.walkerMode === 5) return true;
+      if (n.minionMode === 4) return true;
+    }
+    return false;
+  }
+
   /** walkers: lap the room, pause sometimes — and when the global need
    *  scheduler taps them: join the line, hold their place (yours too), route
    *  through the door, take their time, come back out. Mode 5 is the barge:
    *  the front of a stonewalled line forcing the door and dragging the
-   *  camper out — not to eject them, just to finally have their turn. */
+   *  camper out — not to eject them, just to finally have their turn.
+   *  Mode 6 is the ALERT: fetch a bouncer, lead it back to the incident.
+   *  The full flow + every fallback: docs/bathroom-etiquette.md. */
   private walkerBrain(npc: Character, input: PlayerInput, p: RAPIER.Vector3, dt: number): void {
     const C = CONFIG.crowd;
     const B = CONFIG.bathroom;
+    npc.modeT += dt;
+    npc.stareYaw = null;
     switch (npc.walkerMode) {
       case 0: {
+        npc.annoyT = 0;
         const F = C.flow;
         if (npc.lingerT > 0) {
           npc.lingerT -= dt;
@@ -1337,55 +1490,81 @@ export class Sim {
         break;
       }
       case 1: {
-        // hold your spot in the line (players occupy real slots too)
+        // hold your spot in the line (players occupy real slots too), face
+        // the door like a person in a queue does
         const idx = this.queue.indexOf(npc);
         if (idx === -1) {
-          npc.walkerMode = 0;
+          this.setWalkerMode(npc, 0);
           break;
         }
         const slot = this.slotPos(idx);
         const d = this.seekInput(input, p, slot.x, slot.z, 0.8);
-        // your turn only once you're actually STANDING at the front
-        if (idx === 0 && d < 0.7 && !this.stallOccupied()) {
+        if (d < 0.5) npc.stareYaw = Math.atan2(B.doorMidX - p.x, B.innerZ - p.z);
+        // your turn only once you're STANDING at the front, the stall is
+        // empty, the door has closed, and nobody else is on the door
+        if (idx === 0 && d < 0.6 && !this.doorClaimed()) {
           this.queue.splice(idx, 1);
-          npc.walkerMode = 2;
+          this.setWalkerMode(npc, 2);
         }
         break;
       }
       case 2: {
-        // in through the door — it's just a body, shoulder it open. If
-        // someone slipped in ahead (a queue-cutting player…), back to the
-        // front of the line instead of piling in.
-        if (this.stallOccupied() && !this.inStall(p)) {
+        // in through the door — it's just a body, shoulder it open (NPCs
+        // never PULL the door; that's why holding it shut works). If someone
+        // slipped in ahead (a queue-cutting player…) or this drags on too
+        // long (wedged), back to the front of the line instead of piling in.
+        if ((this.stallOccupied() && !this.inStall(p)) || npc.modeT > 15) {
           this.queue.unshift(npc);
-          npc.walkerMode = 1;
+          this.setWalkerMode(npc, 1);
           break;
         }
         const d = this.routeTo(input, p, B.insidePoint.x, B.insidePoint.z, 0.8, 0.3);
         if (this.inStall(p) && d < 0.7) {
-          npc.walkerMode = 3;
+          this.setWalkerMode(npc, 3);
           npc.stallT = randRange(...B.npcUseTime);
         }
         break;
       }
       case 3: {
-        npc.stallT -= dt;
-        this.routeTo(input, p, B.insidePoint.x, B.insidePoint.z, 0.6, 0.45);
-        if (npc.stallT <= 0) npc.walkerMode = 4;
+        // using the stall. A player walking in on them (John): they TURN,
+        // angry brows, business paused — leave within annoyAt and it's fine;
+        // stay and they go fetch the muscle.
+        const intruder = this.stallIntruderFor(npc);
+        if (intruder) {
+          npc.annoyT += dt;
+          const tp = intruder.pos();
+          npc.stareYaw = Math.atan2(tp.x - p.x, tp.z - p.z);
+          if (npc.annoyT >= B.annoyAt) {
+            npc.annoyT = 0;
+            npc.alertTarget = intruder;
+            npc.alertPhase = 1;
+            this.setWalkerMode(npc, 6);
+            break;
+          }
+        } else {
+          npc.annoyT = Math.max(0, npc.annoyT - dt * 1.5);
+          npc.stallT -= dt; // business proceeds only in privacy
+          this.routeTo(input, p, B.insidePoint.x, B.insidePoint.z, 0.6, 0.45);
+        }
+        if (npc.stallT <= 0) this.setWalkerMode(npc, 4);
         break;
       }
       case 4: {
-        this.routeTo(input, p, -5.0, 2.4, 0.8, 0.4);
-        if (!this.inStall(p) && p.z < B.innerZ - 0.4) npc.walkerMode = 0;
+        this.routeTo(input, p, -5.0, 2.0, 0.8, 0.4);
+        if (!this.inStall(p) && p.z < B.innerZ - 0.4) this.setWalkerMode(npc, 0);
         break;
       }
       case 5: {
-        // the barge. Target: whoever is camping the stall.
+        // the barge. Target: whoever is camping the stall. Hands are HONEST:
+        // no grip until there's a clear path chest-to-chest — walls and the
+        // closed door block it (John: "you shouldn't be able to grab people
+        // through walls").
         const t = this.stallOccupant;
         if (!t || !this.inStall(t.pos())) {
-          // they're out (or gone) — take the turn that was owed
+          // they're out (or gone) — line up for the turn that was owed
           if (npc.grip) this.releaseGrip(npc);
-          npc.walkerMode = 2;
+          this.queue.unshift(npc);
+          this.setWalkerMode(npc, 1);
           break;
         }
         const tp = t.pos();
@@ -1395,14 +1574,134 @@ export class Sim {
         } else {
           npc.grip = null;
           const d = this.routeTo(input, p, tp.x, tp.z, 0.9, 0.2);
-          if (d < 0.85 && npc.state === 0) {
+          if (d < 0.85 && npc.state === 0 && this.handsCanReach(npc, t)) {
             npc.grip = { body: t.body, local: { x: 0, y: 0.2, z: 0 } };
             this.emit({ t: 'grab', x: tp.x, y: tp.y, z: tp.z, on: true });
           }
         }
         break;
       }
+      case 6: {
+        // ALERTING (John's raver-tells-on-you machine). Phase 1: find the
+        // nearest free bouncer. Phase 2: lead it back to the incident. Every
+        // exit path self-rights; the stall-pressure timer is the backstop.
+        const giveUpAlert = () => {
+          npc.alertPhase = 0;
+          npc.alertTarget = null;
+          this.setWalkerMode(npc, 0);
+        };
+        if (this.phase === 1 || npc.modeT > B.fetchGiveUp) {
+          giveUpAlert();
+          break;
+        }
+        if (npc.alertPhase === 1) {
+          let best: Character | null = null;
+          let bd = Infinity;
+          for (const m of this.npcs) {
+            if (!m.isMinion || m.state !== 0) continue;
+            if (m.minionMode !== 0 && m.minionMode !== 1) continue;
+            const mp = m.pos();
+            const d = Math.hypot(mp.x - p.x, mp.z - p.z);
+            if (d < bd) {
+              bd = d;
+              best = m;
+            }
+          }
+          if (!best) break; // all busy — wait it out (modeT will give up)
+          const bp = best.pos();
+          this.routeTo(input, p, bp.x, bp.z, 0.95, 0.4);
+          if (bd < B.fetchFindDist) {
+            // "problem type understood. Now following."
+            best.minionMode = 5;
+            best.followRaver = npc;
+            best.huntTarget = null;
+            best.scanYaw = null;
+            npc.alertPhase = 2;
+          }
+        } else {
+          const escort = this.npcs.find(
+            (m) => m.isMinion && m.minionMode === 5 && m.followRaver === npc,
+          );
+          if (!escort) {
+            npc.alertPhase = 1; // lost my bouncer (floored, poached) — find another
+            break;
+          }
+          const spot = B.outsidePoint;
+          const d = this.routeTo(input, p, spot.x, spot.z, 0.9, 0.35);
+          const ep = escort.pos();
+          if (d < 1.0 && Math.hypot(ep.x - p.x, ep.z - p.z) < 2.6) {
+            // HANDOFF: the bouncer resolves whoever is in there NOW — if the
+            // stall emptied on the walk over, the problem no longer exists
+            escort.followRaver = null;
+            let occ: Character | null = null;
+            for (const ch of this.allChars()) {
+              if (!ch.out && ch !== escort && this.inStall(ch.pos())) {
+                occ = ch;
+                break;
+              }
+            }
+            if (occ) {
+              escort.minionMode = 4;
+              escort.huntTarget = occ;
+              escort.bangDone = false;
+              escort.losLostT = 0;
+              this.minionsCalled = Math.max(this.minionsCalled, 1);
+            } else {
+              escort.minionMode = 0;
+              escort.scanT = randRange(...CONFIG.curator.scanEvery);
+            }
+            // it was the raver's turn that got stolen — front of the line
+            npc.alertPhase = 0;
+            npc.alertTarget = null;
+            if (this.queue.length < B.queueSlots) {
+              this.queue.unshift(npc);
+              this.setWalkerMode(npc, 1);
+            } else {
+              this.setWalkerMode(npc, 0);
+            }
+          }
+        }
+        break;
+      }
     }
+  }
+
+  private setWalkerMode(npc: Character, m: Character['walkerMode']): void {
+    npc.walkerMode = m;
+    npc.modeT = 0;
+  }
+
+  /** the player standing in this occupant's stall (walking in on someone) */
+  private stallIntruderFor(occ: Character): Character | null {
+    if (!this.inStall(occ.pos())) return null;
+    for (const pl of this.players.values()) {
+      if (!pl.out && this.inStall(pl.pos())) return pl;
+    }
+    return null;
+  }
+
+  /** hands are honest: an NPC grip needs a clear straight path chest-to-chest.
+   *  A wall or the closed stall door in between = no grab (John's bug report:
+   *  "the raver just grabbed me through the wall"). */
+  private handsCanReach(a: Character, t: Character): boolean {
+    const ap = a.pos();
+    const tp = t.pos();
+    const origin = { x: ap.x, y: ap.y + 0.25, z: ap.z };
+    const target = { x: tp.x, y: tp.y + 0.2, z: tp.z };
+    const vx = target.x - origin.x;
+    const vy = target.y - origin.y;
+    const vz = target.z - origin.z;
+    const len = Math.hypot(vx, vy, vz) || 1;
+    const hit = this.world.castRay(
+      new RAPIER.Ray(origin, { x: vx / len, y: vy / len, z: vz / len }),
+      len + 0.1,
+      true,
+      undefined,
+      undefined,
+      undefined,
+      a.body,
+    );
+    return hit !== null && hit.collider.parent() === t.body;
   }
 
   /** the Curator's minions: patrol the edges with scanning pauses; given a
@@ -1416,6 +1715,7 @@ export class Sim {
       if (npc.grip) this.releaseGrip(npc);
       npc.minionMode = 0;
       npc.huntTarget = null;
+      npc.followRaver = null;
       npc.losLostT = 0;
       npc.scanYaw = null;
       npc.scanT = randRange(...CU.scanEvery);
@@ -1430,10 +1730,36 @@ export class Sim {
       }
     };
 
+    // mode 5: FOLLOWING an alerting raver back to an incident. The raver does
+    // the navigating; the bouncer heels. Raver gone/floored/done → patrol.
+    if (npc.minionMode === 5) {
+      const r = npc.followRaver;
+      if (!r || r.state !== 0 || r.walkerMode !== 6 || this.phase === 1) return giveUp();
+      const rp = r.pos();
+      const d = Math.hypot(rp.x - p.x, rp.z - p.z);
+      if (d > CU.followDist) {
+        this.routeTo(input, p, rp.x, rp.z, 0.95, CU.followDist * 0.7);
+        chaseHop();
+      } else {
+        npc.scanYaw = Math.atan2(rp.x - p.x, rp.z - p.z);
+      }
+      return;
+    }
+
     if (npc.minionMode === 2 || npc.minionMode === 3 || npc.minionMode === 4) {
       const t = npc.huntTarget;
       if (!t || t.out || this.phase === 1) return giveUp();
       const tp = t.pos();
+      // stall protocol arrival: ONE much-louder-than-any-raver bang on the
+      // door before the push-in (John: the bouncer announces itself)
+      if (npc.minionMode === 4 && !npc.bangDone) {
+        const B = CONFIG.bathroom;
+        if (Math.hypot(p.x - B.outsidePoint.x, p.z - B.outsidePoint.z) < 2.0) {
+          npc.bangDone = true;
+          npc.knockAnimT = 1.2;
+          this.emit({ t: 'knock', ...vec(p), power: 2 });
+        }
+      }
       // shoo (3): done once they're off the stand. barge (4): done once
       // they're out of the stall. hunt (2): done at the exit — ejected.
       if (npc.minionMode === 3 && !this.onBooth(t) && !npc.grip) return giveUp();
@@ -1478,7 +1804,9 @@ export class Sim {
           }
         }
         const d = Math.hypot(tp.x - p.x, tp.z - p.z);
-        const canGrab = npc.minionMode === 3 ? d < CU.catchDist + 0.35 : d < CU.catchDist;
+        const canGrab =
+          (npc.minionMode === 3 ? d < CU.catchDist + 0.35 : d < CU.catchDist) &&
+          this.handsCanReach(npc, t); // honest hands: never through a wall/door
         if (canGrab && npc.state === 0) {
           npc.grip = { body: t.body, local: { x: 0, y: 0.2, z: 0 } };
           this.emit({ t: 'grab', x: tp.x, y: tp.y, z: tp.z, on: true });
@@ -1489,6 +1817,15 @@ export class Sim {
       }
       return;
     }
+    // AGGRO STARE (John): a pissed-off minion with nothing else to do stops
+    // dead and looks STRAIGHT at whoever did it, and keeps staring while the
+    // red cools gradually. Grab one and it turns to face you immediately.
+    if (npc.aggro > CU.aggroStareAt && npc.aggroTarget && !npc.aggroTarget.out) {
+      const ap = npc.aggroTarget.pos();
+      npc.scanYaw = Math.atan2(ap.x - p.x, ap.z - p.z);
+      return; // rooted to the spot, glaring
+    }
+
     // patrol with scanning pauses — the still, watching figure IS the tell
     if (npc.minionMode === 1) {
       npc.lingerT -= dt;
@@ -1523,8 +1860,11 @@ export class Sim {
 
   // ---------- the Curator ----------
 
-  /** players and NPCs hold their places in the bathroom line. A player joins
-   *  by standing at the tail slot, and loses the place by wandering off. */
+  /** players and NPCs hold their places in the bathroom line. The etiquette
+   *  (John, spelled out in docs/bathroom-etiquette.md): you join ONLY by
+   *  standing at the BACK, behind the last person — beside the middle of the
+   *  line counts for nothing — and leaving the straight-line train loses
+   *  your place. */
   private updateQueue(): void {
     const B = CONFIG.bathroom;
     for (const p of this.players.values()) {
@@ -1542,15 +1882,17 @@ export class Sim {
           // line cut, and the stall-pressure system skips straight to the barge
           if (idx === 0) p.enteredFairAt = this.time;
           this.queue.splice(idx, 1);
-        } else if (Math.hypot(pp.x - slot.x, pp.z - slot.z) > 1.8) {
-          this.queue.splice(idx, 1);
+        } else if (Math.hypot(pp.x - slot.x, pp.z - slot.z) > B.leaveDist) {
+          this.queue.splice(idx, 1); // left the train, lost the place
         }
       }
     }
-    // an NPC that got shoved out of queue-mode shouldn't wedge the line
+    // an NPC that got shoved out of queue-mode shouldn't wedge the line —
+    // and NOBODY holds a place lying on the floor (a floored front would
+    // deadlock the door forever; getting up means rejoining like anyone)
     for (let i = this.queue.length - 1; i >= 0; i--) {
       const ch = this.queue[i];
-      if (!ch.isPlayer && ch.walkerMode !== 1) this.queue.splice(i, 1);
+      if (ch.state !== 0 || (!ch.isPlayer && ch.walkerMode !== 1)) this.queue.splice(i, 1);
     }
   }
 
@@ -1603,8 +1945,12 @@ export class Sim {
       this.minionsCalled = 0;
       for (const n of this.npcs) {
         if (n.walkerMode === 5 && (!occ || n.grip?.body !== occ.body)) {
+          // the turn they were owed: FRONT of the line, through the normal
+          // claim rules — never a free-for-all on a freed door (John: "it
+          // seems like all try to go in at once")
           if (n.grip) this.releaseGrip(n);
-          n.walkerMode = 2; // door's free (or a new camper) — try for the turn
+          this.queue.unshift(n);
+          this.setWalkerMode(n, 1);
         }
         if (n.minionMode === 4 && (!occ || n.huntTarget !== occ)) {
           if (n.grip) this.releaseGrip(n);
@@ -1632,27 +1978,53 @@ export class Sim {
     if (this.knocksFired === 0 && this.pressureT >= B.knockAt) {
       this.knocksFired = 1;
       knocker.knockAnimT = 1.0;
-      this.emit({ t: 'knock', ...vec(knocker.pos()), loud: false });
+      this.emit({ t: 'knock', ...vec(knocker.pos()), power: 0 });
     } else if (this.knocksFired === 1 && this.pressureT >= B.knock2At) {
       this.knocksFired = 2;
       knocker.knockAnimT = 1.2;
-      this.emit({ t: 'knock', ...vec(knocker.pos()), loud: true });
+      this.emit({ t: 'knock', ...vec(knocker.pos()), power: 1 });
     }
     // the barge: the front NPC stops waiting and goes in after their turn
     if (this.pressureT >= B.bargeAt && frontNpcWaiting && !barger) {
-      front!.walkerMode = 5; // updateQueue drops them from the line
+      this.setWalkerMode(front!, 5); // updateQueue drops them from the line
     }
-    // still blocked → the muscle arrives, one more per minute
-    if (this.pressureT >= B.minionAt + this.minionsCalled * B.minionEvery) {
-      const free = this.npcs.find(
-        (n) => n.isMinion && n.state === 0 && n.minionMode !== 2 && n.minionMode !== 4,
-      );
-      if (free) {
-        this.minionsCalled++;
-        free.minionMode = 4;
-        free.huntTarget = occ;
-        free.scanYaw = null;
+    // still blocked past minionAt → the muscle gets involved. The FIRST
+    // bouncer arrives embodied: the barger gives up wrestling and goes to
+    // FETCH one (walker mode 6 — John's raver-alert flow), leading it back.
+    // Backstops so the ladder can't stall out: if the fetch hasn't produced a
+    // bouncer a minute later, one is direct-assigned; each further minute
+    // another joins the removal regardless.
+    const fetching = this.npcs.some((n) => n.walkerMode === 6);
+    const onStall = this.npcs.some((n) => n.minionMode === 4);
+    if (this.pressureT >= B.minionAt && this.minionsCalled === 0 && !fetching && !onStall) {
+      if (barger && this.pressureT < B.minionAt + B.minionEvery) {
+        if (barger.grip) this.releaseGrip(barger);
+        barger.alertTarget = occ;
+        barger.alertPhase = 1;
+        this.setWalkerMode(barger, 6);
+      } else {
+        // fetch failed or nobody left to send — the Curator radios one over
+        this.assignStallMinion(occ);
       }
+    } else if (
+      this.minionsCalled >= 1 &&
+      this.pressureT >= B.minionAt + this.minionsCalled * B.minionEvery
+    ) {
+      this.assignStallMinion(occ);
+    }
+  }
+
+  private assignStallMinion(occ: Character): void {
+    const free = this.npcs.find(
+      (n) => n.isMinion && n.state === 0 && n.minionMode !== 2 && n.minionMode !== 4,
+    );
+    if (free) {
+      this.minionsCalled++;
+      free.minionMode = 4;
+      free.huntTarget = occ;
+      free.followRaver = null;
+      free.bangDone = false;
+      free.scanYaw = null;
     }
   }
 
@@ -1668,7 +2040,10 @@ export class Sim {
     const dz = tp.z - mp.z;
     const dist = Math.hypot(dx, dz);
     if (dist > CU.viewRange || dist < 1e-3) return false;
-    if (m.huntTarget !== t) {
+    // a body flat on the floor DRAWS the eye — no view-cone check for
+    // sleepers (John fell asleep in the open and nobody came; they should)
+    const sleeper = t.state === 1 && t.staminaDown;
+    if (m.huntTarget !== t && !sleeper) {
       let dyaw = Math.atan2(dx, dz) - yawOf(m.body.rotation());
       while (dyaw > Math.PI) dyaw -= Math.PI * 2;
       while (dyaw < -Math.PI) dyaw += Math.PI * 2;
@@ -1702,21 +2077,43 @@ export class Sim {
     if (this.phase === 0) {
       for (const m of this.npcs) {
         if (!m.isMinion) continue;
+        // AGGRO decays SLOWLY (John: the red never snaps back to white —
+        // they keep staring while it cools). Working a removal keeps it fed.
+        m.aggro = Math.max(0, m.aggro - CU.aggroDecay * dt);
+        if (m.aggroTarget && m.aggroTarget.out) {
+          m.aggro = 0;
+          m.aggroTarget = null;
+        }
+        if (m.aggro <= 0) m.aggroTarget = null;
+        if ((m.minionMode === 2 || m.minionMode === 4) && m.huntTarget?.isPlayer) {
+          m.aggro = Math.min(1, m.aggro + CU.aggroTaskRate * dt);
+          m.aggroTarget = m.huntTarget;
+        }
         // the red head is the observed-tell (John): it BUILDS with how
-        // suspicious the person they're looking at is, and stays fully lit
-        // while they're on the job (hunt/shoo/barge)
-        m.watchSignal = m.minionMode >= 2 ? 1 : 0;
+        // suspicious the person they're looking at is, stays fully lit while
+        // they're on the job (hunt/shoo/barge), and NEVER falls below the
+        // slow-cooling aggro — the glare fades gradually, staring all the way
+        m.watchSignal = m.minionMode >= 2 && m.minionMode !== 5 ? 1 : m.aggro;
         if (m.state !== 0) continue;
         for (const p of this.players.values()) {
           if (p.out) continue;
           // holding onto a minion fills the bar FAST — grab-and-release is
-          // survivable, dragging one around the club is not (John)
+          // survivable, dragging one around the club is not (John). It also
+          // makes THIS minion furious: it turns and looks straight at you.
           if (p.grip && p.grip.body === m.body) {
             p.heat = Math.min(1.2, p.heat + CU.heatGrabbed * dt);
             p.heatObs = true;
+            m.aggro = Math.min(1, m.aggro + CU.aggroGrabRate * dt);
+            m.aggroTarget = p;
             m.watchSignal = Math.max(m.watchSignal, 0.6 + 0.4 * Math.min(1, p.heat));
             watchNow.set(p, Math.max(watchNow.get(p)!, 0.8));
-            if (m.minionMode < 2) m.scanYaw = null; // they notice, believe me
+          }
+          // a bouncer actively trying to remove you while you keep resisting
+          // (still in the stall) is patience burning: heat accrues the whole
+          // time — leave promptly and nothing sticks (John)
+          if (m.minionMode === 4 && m.huntTarget === p && this.inStall(p.pos())) {
+            p.heat = Math.min(1.2, p.heat + CONFIG.bathroom.protocolHeat * dt);
+            p.heatObs = true;
           }
           if (!this.minionSees(m, p)) continue;
           const mp = m.pos();
@@ -1791,7 +2188,8 @@ export class Sim {
         }
         return; // someone is already on them
       }
-      const free = m.minionMode === 0 || m.minionMode === 1;
+      // an ejection outranks escorting a complaining raver (mode 5)
+      const free = m.minionMode === 0 || m.minionMode === 1 || (mode === 2 && m.minionMode === 5);
       if (!free) continue;
       const mp = m.pos();
       const tp = target.pos();
@@ -1804,6 +2202,7 @@ export class Sim {
     if (pick) {
       pick.minionMode = mode;
       pick.huntTarget = target;
+      pick.followRaver = null;
       pick.losLostT = 0;
       pick.scanYaw = null;
     }
@@ -1833,6 +2232,10 @@ export class Sim {
           if (th.isPlayer && !th.out && this.phase === 0) {
             th.heat = Math.min(1.2, th.heat + CU.heatThrowHit);
             th.heatObs = true;
+            // and the minion is now personally FURIOUS at the thrower: the
+            // stare + slow-cooling red head (aggro) do the rest
+            m.aggro = Math.min(1, m.aggro + CU.aggroThrowHit);
+            m.aggroTarget = th;
           }
           // snap around toward the thrower — you have been NOTICED
           const thp = th.pos();
@@ -1985,11 +2388,16 @@ export class Sim {
                 ? 4
                 : 0,
       asleep: ch.staminaDown,
-      // pissed off (angry-brows tell, John): a minion on the job, a walker
-      // barging the stall, or anyone mid-knock
+      // pissed off (angry-brows tell, John): a minion on the job or still
+      // hot with aggro, a walker barging/alerting, an annoyed stall occupant
+      // being walked in on, or anyone mid-knock. Brows track the anger, and
+      // aggro fades slowly — so the face un-angers gradually, like the head.
       angry: ch.isMinion
-        ? ch.minionMode >= 2
-        : ch.walkerMode === 5 || ch.knockAnimT > 0,
+        ? (ch.minionMode >= 2 && ch.minionMode !== 5) || ch.aggro > CONFIG.curator.browsAt
+        : ch.walkerMode === 5 ||
+          ch.walkerMode === 6 ||
+          ch.annoyT > 0.35 ||
+          ch.knockAnimT > 0,
       k: ch.kFelt,
       stam: ch.isPlayer ? ch.stamina : 1,
       watch: ch.watchSignal,

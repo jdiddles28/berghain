@@ -29,6 +29,7 @@ export class ClubAudio {
   private anchored = false;
   private k = 0; // felt ketamine level 0..5 (local player)
   private parGain!: GainNode;
+  private droneGain!: GainNode; // deep-K unease shimmer
   private nextGhostAt = 0; // ctx time of the next hallucination
   private recentEvents: GameEvent['t'][] = [];
 
@@ -88,6 +89,18 @@ export class ClubAudio {
     par.connect(this.parGain);
     this.parGain.connect(this.kFilter);
     par.start();
+    // deep-K unease: two barely-detuned lows beating against each other —
+    // silent until felt level ~4, then a constant shimmer under everything
+    this.droneGain = this.ctx.createGain();
+    this.droneGain.gain.value = 0;
+    for (const f of [96, 96.7]) {
+      const d = this.ctx.createOscillator();
+      d.type = 'triangle';
+      d.frequency.value = f;
+      d.connect(this.droneGain);
+      d.start();
+    }
+    this.droneGain.connect(this.kFilter);
   }
 
   /** The shared AudioContext — the voice module builds its graph on it. */
@@ -125,17 +138,35 @@ export class ClubAudio {
     this.kFilter.frequency.setTargetAtTime(cutoff, now, 0.4);
     this.wet.gain.setTargetAtTime((k / 5) * 0.55, now, 0.5);
     this.master.gain.setTargetAtTime(CONFIG.music.master * (1 - 0.16 * (k / 5)), now, 0.5);
-    // hallucinations arrive from level ~2.5, more often the deeper you go
-    if (k >= 2.5) {
-      if (this.nextGhostAt === 0) this.nextGhostAt = now + 4;
+    // the hallucination STAIRCASE (John): level 2 very very restrained — a
+    // rare, quiet maybe-nothing. Level 3: "wait, am I actually hearing
+    // that??" — clearly audible, spaced out. Level 4: a good bit, plus a
+    // constant uneasy shimmer under the music.
+    const tier = k < 1.6 ? -1 : k < 2.6 ? 0 : k < 3.6 ? 1 : 2;
+    if (tier >= 0) {
+      if (this.nextGhostAt === 0) this.nextGhostAt = now + (tier === 0 ? 20 : 6);
       if (now >= this.nextGhostAt) {
-        this.nextGhostAt = now + (5 + Math.random() * 9) * Math.max(0.3, (5.5 - k) / 3);
-        if (Math.random() < 0.65 || this.recentEvents.length === 0) this.whisper(now + 0.05);
-        else this.ghostReplay(now + 0.05);
+        this.nextGhostAt =
+          now +
+          (tier === 0
+            ? 35 + Math.random() * 35
+            : tier === 1
+              ? 13 + Math.random() * 13
+              : 5 + Math.random() * 6);
+        const r = Math.random();
+        if (tier === 0) this.whisper(now + 0.05, 0.35);
+        else if (r < 0.4) this.whisper(now + 0.05, 1);
+        else if (r < 0.65 && this.recentEvents.length > 0) this.ghostReplay(now + 0.05);
+        else this.phantomKnock(now + 0.05);
       }
     } else {
       this.nextGhostAt = 0;
     }
+    this.droneGain.gain.setTargetAtTime(
+      tier === 2 ? 0.028 + 0.022 * Math.min(1.4, k - 3.6) : 0,
+      now,
+      1.2,
+    );
 
     if (!this.anchored) {
       // map render-beat → ctx time once, then re-anchor slowly if drift grows
@@ -433,13 +464,13 @@ export class ClubAudio {
   // ---------- hallucinations (they are not there) ----------
 
   /** a half-heard whisper off to one side: syllabic band-passed breath. turn
-   *  around and there's nothing. */
-  private whisper(t: number): void {
+   *  around and there's nothing. mul scales it down for the restrained tier. */
+  private whisper(t: number, mul = 1): void {
     const ctx = this.ctx!;
     const pan = ctx.createStereoPanner();
     pan.pan.value = Math.random() < 0.5 ? -(0.6 + Math.random() * 0.35) : 0.6 + Math.random() * 0.35;
     const out = ctx.createGain();
-    out.gain.value = 0.07 + 0.035 * this.k;
+    out.gain.value = (0.07 + 0.035 * this.k) * mul;
     out.connect(pan);
     pan.connect(this.kFilter);
     const syllables = 2 + Math.floor(Math.random() * 4);
@@ -491,6 +522,30 @@ export class ClubAudio {
     }
   }
 
+  /** did somebody just knock?? Nobody knocked. Quiet, off to one side,
+   *  straight into your head (bypasses the room acoustics on purpose). */
+  private phantomKnock(t: number): void {
+    const ctx = this.ctx!;
+    const pan = ctx.createStereoPanner();
+    pan.pan.value = Math.random() < 0.5 ? -0.7 : 0.7;
+    const out = ctx.createGain();
+    out.gain.value = 0.3;
+    out.connect(pan);
+    pan.connect(this.kFilter);
+    for (let i = 0; i < 2; i++) {
+      const rt = t + i * 0.19;
+      const o = ctx.createOscillator();
+      o.frequency.setValueAtTime(430, rt);
+      o.frequency.exponentialRampToValueAtTime(150, rt + 0.05);
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0.6, rt);
+      g.gain.exponentialRampToValueAtTime(0.001, rt + 0.11);
+      o.connect(g).connect(out);
+      o.start(rt);
+      o.stop(rt + 0.12);
+    }
+  }
+
   // ---------- SFX from game events ----------
 
   handleEvents(evs: GameEvent[]): void {
@@ -505,7 +560,7 @@ export class ClubAudio {
       else if (ev.t === 'pickup') this.thud(t, 0.2);
       else if (ev.t === 'throw') this.whoosh(t);
       else if (ev.t === 'dose') this.sniff(t);
-      else if (ev.t === 'knock') this.knock(t, ev.loud);
+      else if (ev.t === 'knock') this.knock(t, ev.power);
       else if (ev.t === 'eject') {
         // the door hits the frame behind somebody
         this.thud(t, 1);
@@ -520,23 +575,51 @@ export class ClubAudio {
     g.connect(this.master);
   }
 
-  /** knuckles on the stall door: hollow woody raps — unmistakably a knock.
-   *  The loud version is more raps, harder. */
-  private knock(t: number, loud: boolean): void {
+  /** knuckles on the stall door: hollow woody raps — unmistakably a knock
+   *  (John: the b14 ones were "okay but definitely could've been more clear",
+   *  so every tier got louder + a low door-resonance layer). power 0: polite ·
+   *  1: LOUDER · 2: a bouncer's fist — flat-hand BANGS with a door boom,
+   *  much more aggressive than any raver's. */
+  private knock(t: number, power: 0 | 1 | 2): void {
     const ctx = this.ctx!;
-    const raps = loud ? 4 : 2;
+    const raps = [3, 4, 5][power];
+    const gap = [0.17, 0.15, 0.12][power];
+    const vol = [0.5, 0.72, 0.95][power];
+    if (power === 2) {
+      // the whole door jumps in its frame
+      const o = ctx.createOscillator();
+      o.frequency.setValueAtTime(130, t);
+      o.frequency.exponentialRampToValueAtTime(38, t + 0.16);
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0.7, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t + 0.28);
+      o.connect(g).connect(this.master);
+      o.start(t);
+      o.stop(t + 0.3);
+    }
     for (let i = 0; i < raps; i++) {
-      const rt = t + i * 0.16;
+      const rt = t + 0.03 + i * gap;
+      // knuckle crack
       const o = ctx.createOscillator();
       o.frequency.setValueAtTime(520, rt);
       o.frequency.exponentialRampToValueAtTime(180, rt + 0.04);
       const g = ctx.createGain();
-      g.gain.setValueAtTime(loud ? 0.5 : 0.32, rt);
+      g.gain.setValueAtTime(vol, rt);
       g.gain.exponentialRampToValueAtTime(0.001, rt + 0.09);
       o.connect(g).connect(this.master);
       o.start(rt);
       o.stop(rt + 0.1);
-      const n = this.noiseBurst(rt, 0.02, loud ? 0.3 : 0.18, 900);
+      // woody door-panel resonance under it — reads as a DOOR, not a click
+      const w = ctx.createOscillator();
+      w.frequency.setValueAtTime(245, rt);
+      w.frequency.exponentialRampToValueAtTime(130, rt + 0.05);
+      const wg = ctx.createGain();
+      wg.gain.setValueAtTime(vol * 0.55, rt);
+      wg.gain.exponentialRampToValueAtTime(0.001, rt + 0.12);
+      w.connect(wg).connect(this.master);
+      w.start(rt);
+      w.stop(rt + 0.13);
+      const n = this.noiseBurst(rt, 0.02, vol * 0.55, 900);
       n.connect(this.master);
     }
   }

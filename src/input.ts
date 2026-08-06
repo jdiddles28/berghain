@@ -114,7 +114,7 @@ export class Input {
       grab: this.grabHeld,
       use: this.useHeld,
       drop: this.keys.has('KeyQ'), // tap: drop · hold: charge a throw
-      dance: this.keys.has('KeyE'), // hold: bounce with the crowd on the beat
+      dance: this.keys.has('KeyE'), // the sim toggles the dance state on the press edge
     };
     this.hopQueued = false;
     return out;
