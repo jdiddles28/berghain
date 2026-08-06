@@ -17,6 +17,9 @@ const hud = document.getElementById('hud')!;
 const stambox = document.getElementById('stambox')!;
 const stamfill = document.getElementById('stamfill')!;
 const bigmsg = document.getElementById('bigmsg')!;
+const bigmsgText = document.getElementById('bigmsgText')!;
+const btnRestart = document.getElementById('btnRestart') as HTMLButtonElement;
+const restartHint = document.getElementById('restartHint')!;
 const menu = document.getElementById('menu')!;
 const btnHost = document.getElementById('btnHost') as HTMLButtonElement;
 const btnJoin = document.getElementById('btnJoin') as HTMLButtonElement;
@@ -52,6 +55,14 @@ async function start(mode: 'host' | 'join'): Promise<void> {
   if (session instanceof HostSession) {
     installDebug(session);
   }
+  // the end screen restarts the night — same lobby code, same people (John).
+  // Only the host holds the keys; clients see who to nag.
+  btnRestart.style.display = session instanceof HostSession ? 'block' : 'none';
+  restartHint.textContent =
+    session instanceof HostSession ? '' : 'the host can restart the night';
+  btnRestart.onclick = () => {
+    if (session instanceof HostSession) session.restart();
+  };
 
   let last = performance.now();
   const loop = () => {
@@ -81,10 +92,10 @@ async function start(mode: 'host' | 'join'): Promise<void> {
         stamfill.style.background = meSnap.stam < 0.25 ? '#e0484f' : '#cfd2dc';
         if (meSnap.out) {
           bigmsg.style.display = 'flex';
-          bigmsg.textContent = 'ESCORTED OUT\nthe Curator has seen enough';
+          bigmsgText.textContent = 'ESCORTED OUT\nthe Curator has seen enough';
         } else if (frame.phase === 1) {
           bigmsg.style.display = 'flex';
-          bigmsg.textContent = 'CLOSING TIME\nyou lasted the Klubnacht';
+          bigmsgText.textContent = 'CLOSING TIME\nyou lasted the Klubnacht';
         } else {
           bigmsg.style.display = 'none';
         }

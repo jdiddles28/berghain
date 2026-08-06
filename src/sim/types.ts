@@ -27,6 +27,7 @@ export interface PlayerInput {
   grab: boolean; // held (RMB) — items first, then the universal body-grab
   use: boolean; // held (LMB) — using what's in your hand (bumping the bag)
   drop: boolean; // held (Q) — tap: drop. hold: charge a throw, release to loose it
+  dance: boolean; // held (E) — bounce with the crowd on the beat (no purpose yet, John)
 }
 
 export const ZERO_INPUT: PlayerInput = {
@@ -39,6 +40,7 @@ export const ZERO_INPUT: PlayerInput = {
   grab: false,
   use: false,
   drop: false,
+  dance: false,
 };
 
 // 0 upright · 1 down (ragdolled) · 2 getting up
@@ -51,8 +53,14 @@ export interface BodySnap {
   st: BodyState;
   /** world point this body's hands are gripping (any solid), or null */
   gripPoint: Vec3 | null;
-  /** action flag for the view: 0 none · 1 dosing (bag to face) · 2 staggered · 3 reaching (grab attempt) */
-  act: 0 | 1 | 2 | 3;
+  /** action flag for the view: 0 none · 1 dosing (bag to face) · 2 staggered ·
+   *  3 reaching (grab attempt) · 4 dancing (beat bounce) · 5 knocking on the door */
+  act: 0 | 1 | 2 | 3 | 4 | 5;
+  /** stamina hit empty — asleep on the floor (fetal curl, not a ragdoll flop) */
+  asleep: boolean;
+  /** this body is PISSED OFF (barging the stall, knocking, hunting you) —
+   *  renders as angry slanted eyebrows (John: tells you who is mad at you) */
+  angry: boolean;
   /** FELT ketamine level 0..5 (players only; 0 for NPCs) — drives effects */
   k: number;
   /** stamina 0..1 (players; 1 for NPCs) — THE bar */
@@ -97,7 +105,8 @@ export type GameEvent =
   | { t: 'pickup'; x: number; y: number; z: number } // item into a hand (incl. steals)
   | { t: 'throw'; x: number; y: number; z: number }
   | { t: 'dose'; x: number; y: number; z: number } // sniff
-  | { t: 'eject'; x: number; y: number; z: number }; // someone got walked out
+  | { t: 'eject'; x: number; y: number; z: number } // someone got walked out
+  | { t: 'knock'; x: number; y: number; z: number; loud: boolean }; // the front of the line wants IN
 
 export interface RenderFrame {
   time: number;
@@ -183,6 +192,8 @@ function lerpBody(a: BodySnap, b: BodySnap, t: number): BodySnap {
     st: b.st,
     gripPoint: a.gripPoint && b.gripPoint ? lerpV(a.gripPoint, b.gripPoint, t) : b.gripPoint,
     act: b.act,
+    asleep: b.asleep,
+    angry: b.angry,
     k: a.k + (b.k - a.k) * t,
     stam: a.stam + (b.stam - a.stam) * t,
     watch: a.watch + (b.watch - a.watch) * t,

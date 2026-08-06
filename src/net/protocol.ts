@@ -24,7 +24,9 @@ export const INTERP_DELAY_SNAPS = 2.5;
 // b12: THE NIGHT — stamina/watch/out per body, clock+phase+door in the header.
 // b13: in-game proximity voice (freshness gate — no wire change, but a stale
 // tab would silently have no voice peer and "Alex can't hear us").
-export const PROTOCOL_VERSION = 13;
+// b14: dance input bit, asleep flag (fetal curl), NPC-held items (holder num
+// 128+idx), knock events, restart message.
+export const PROTOCOL_VERSION = 14;
 
 // ICE: STUN discovers a direct path between machines; TURN *relays* traffic
 // when hard NATs (phone-hotspot carrier CGNAT, strict office wifi) refuse
@@ -99,7 +101,8 @@ export type CtlMsg =
   | { t: 'init'; playerId: string; v?: number }
   | { t: 'stale' } // host is NEWER than you — refresh your page
   | { t: 'full' }
-  | { t: 'ev'; evs: GameEvent[] };
+  | { t: 'ev'; evs: GameEvent[] }
+  | { t: 'restart' }; // host reset the night — same lobby, same people, fresh club
 
 // input + tiny ping/pong ride the fast channel as JSON-ish objects; snapshots
 // are raw ArrayBuffers (see below) — the receiver tells them apart by type
@@ -115,6 +118,7 @@ export type FastMsg =
       g: 0 | 1;
       u: 0 | 1;
       d: 0 | 1;
+      dn: 0 | 1; // dance held
     }
   | { t: 'pi'; n: number }
   | { t: 'po'; n: number };
@@ -169,7 +173,15 @@ export function encodeSnapshot(seq: number, snap: SimSnapshot): ArrayBuffer {
   for (const b of snap.npcs) o = writeBody(dv, o, b);
   for (const it of snap.items) {
     dv.setUint8(o++, it.kind);
-    dv.setUint8(o++, it.holder ? Number(it.holder.slice(1)) : 255);
+    // 255 = loose · <128 = player number · 128+idx = held by NPC idx
+    dv.setUint8(
+      o++,
+      it.holder === null
+        ? 255
+        : it.holder.startsWith('n')
+          ? 128 + Number(it.holder.slice(1))
+          : Number(it.holder.slice(1)),
+    );
     dv.setUint8(o++, it.doses);
     o = writeI16x3(dv, o, it.pos.x * QP, it.pos.y * QP, it.pos.z * QP);
     o = writeQuat(dv, o, it.rot);
@@ -216,7 +228,14 @@ export function decodeSnapshot(raw: ArrayBuffer | ArrayBufferView, bpm: number):
     o += 6;
     const rot = readQuat(dv, o);
     o += 8;
-    items.push({ kind, pos, rot, holder: holderNum === 255 ? null : `p${holderNum}`, doses });
+    items.push({
+      kind,
+      pos,
+      rot,
+      holder:
+        holderNum === 255 ? null : holderNum >= 128 ? `n${holderNum - 128}` : `p${holderNum}`,
+      doses,
+    });
   }
   const snap: SimSnapshot = {
     time,
@@ -246,7 +265,10 @@ function writeBody(dv: DataView, o: number, b: BodySnap): number {
   dv.setUint8(o++, Math.max(0, Math.min(255, Math.round(b.k * 51))));
   dv.setUint8(o++, Math.max(0, Math.min(255, Math.round(b.stam * 255))));
   dv.setUint8(o++, Math.max(0, Math.min(255, Math.round(b.watch * 255))));
-  dv.setUint8(o++, (b.out ? 1 : 0) | (b.gripPoint ? 2 : 0));
+  dv.setUint8(
+    o++,
+    (b.out ? 1 : 0) | (b.gripPoint ? 2 : 0) | (b.asleep ? 4 : 0) | (b.angry ? 8 : 0),
+  );
   o = writeI16x3(dv, o, b.pos.x * QP, b.pos.y * QP, b.pos.z * QP);
   o = writeQuat(dv, o, b.rot);
   o = writeI16x3(dv, o, b.vel.x * QV, b.vel.y * QV, b.vel.z * QV);
@@ -275,7 +297,23 @@ function readBody(dv: DataView, o: number): [BodySnap, number] {
     gripPoint = { x: dv.getInt16(o, true) / QP, y: dv.getInt16(o + 2, true) / QP, z: dv.getInt16(o + 4, true) / QP };
     o += 6;
   }
-  return [{ pos, rot, vel, st, act, k, stam, watch, out: (flags & 1) !== 0, gripPoint }, o];
+  return [
+    {
+      pos,
+      rot,
+      vel,
+      st,
+      act,
+      k,
+      stam,
+      watch,
+      out: (flags & 1) !== 0,
+      asleep: (flags & 4) !== 0,
+      angry: (flags & 8) !== 0,
+      gripPoint,
+    },
+    o,
+  ];
 }
 
 function writeI16x3(dv: DataView, o: number, a: number, b: number, c: number): number {

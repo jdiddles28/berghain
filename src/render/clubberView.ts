@@ -53,6 +53,8 @@ export class ClubberView {
   private dancePhase = Math.random() * Math.PI * 2;
   private scale: number;
   private headMat: THREE.MeshLambertMaterial;
+  private browL!: THREE.Mesh;
+  private browR!: THREE.Mesh;
 
   constructor(outfit: number, skin: number, scale = 1, minion = false) {
     this.scale = scale;
@@ -73,6 +75,20 @@ export class ClubberView {
 
     this.head = new THREE.Mesh(new THREE.IcosahedronGeometry(0.15 * s, 1), skinMat);
     this.head.position.y = 0.61 * s;
+    // faces stay blank (John) — EXCEPT the angry brows: slanted dark bars
+    // that appear when this body is pissed off at someone, so you can tell
+    // who is mad at you at a glance. Hidden the rest of the time.
+    const browMat = new THREE.MeshBasicMaterial({ color: 0x0a0507 });
+    const browGeo = new THREE.BoxGeometry(0.085 * s, 0.022 * s, 0.02 * s);
+    this.browL = new THREE.Mesh(browGeo, browMat);
+    this.browL.position.set(-0.055 * s, 0.045 * s, 0.125 * s);
+    this.browL.rotation.z = -0.55; // inner end down — the angry slant
+    this.browR = new THREE.Mesh(browGeo, browMat);
+    this.browR.position.set(0.055 * s, 0.045 * s, 0.125 * s);
+    this.browR.rotation.z = 0.55;
+    this.browL.visible = false;
+    this.browR.visible = false;
+    this.head.add(this.browL, this.browR);
     if (minion) {
       // the one thing that gives them away up close: the earpiece
       const ear = new THREE.Mesh(
@@ -145,14 +161,28 @@ export class ClubberView {
     this.legR.visible = v;
   }
 
+  /** local player: hide the chest/waist the camera sits inside, but KEEP the
+   *  hips and legs — look down and you see your own legs stepping (John) */
+  setFirstPersonBody(): void {
+    this.chest.visible = false;
+    this.waist.visible = false;
+    this.hips.visible = true;
+    this.legL.visible = true;
+    this.legR.visible = true;
+  }
+
   update(b: BodySnap, dt: number, beat: number, opts?: ClubberFrameOpts): void {
     this.group.position.set(b.pos.x, b.pos.y, b.pos.z);
     this.group.quaternion.set(b.rot.x, b.rot.y, b.rot.z, b.rot.w);
     this.group.updateMatrixWorld();
 
-    // watching = the eyes catch red light
+    // watching = the head catches red light. Builds GRADUALLY with suspicion
+    // (John liked this exact read) and burns full red in pursuit — strong
+    // enough now that it can't be mistaken for the club lights.
     const w = opts?.watching ?? 0;
-    this.headMat.emissive.setRGB(w * 0.55, w * 0.05, w * 0.05);
+    this.headMat.emissive.setRGB(w * w * 0.95, w * w * 0.04, w * w * 0.05);
+    this.browL.visible = b.angry;
+    this.browR.visible = b.angry;
 
     const speed = Math.hypot(b.vel.x, b.vel.z);
     this.walkPhase += speed * dt * 5.2;
@@ -199,6 +229,18 @@ export class ClubberView {
     }
 
     if (b.st === 1) {
+      if (b.asleep) {
+        // out of gas: not a ragdoll flop — a fetal curl, sleeping it off
+        // (John: "you actually lie down and curl up in a little fetal position")
+        const breathe = Math.sin(beat * Math.PI * 0.5) * 0.05;
+        this.armL.rotation.set(-1.9 + breathe, 0.35, 0.55);
+        this.armR.rotation.set(-1.8 - breathe, -0.35, -0.55);
+        this.legL.rotation.set(-1.85, 0, 0.16);
+        this.legR.rotation.set(-1.75, 0, -0.16);
+        this.kneeL.rotation.x = 2.15;
+        this.kneeR.rotation.x = 2.05;
+        return;
+      }
       // down: limbs dangle loose
       const flop = Math.sin(beat * Math.PI) * 0.25;
       this.armL.rotation.set(2.4 + flop, 0, 0.5);
@@ -207,6 +249,16 @@ export class ClubberView {
       this.legR.rotation.set(0.45 - flop * 0.5, 0, -0.22);
       this.kneeL.rotation.x = 0.5 + flop * 0.3;
       this.kneeR.rotation.x = 0.4 - flop * 0.3;
+      return;
+    }
+
+    if (b.act === 5) {
+      // knocking on the stall door: sharp raps from the near arm — you can
+      // HEAR it, and it's very clear what they want (John)
+      const rap = Math.max(0, Math.sin(beat * Math.PI * 6));
+      this.armL.rotation.set(-1.5 - rap * 0.45, 0, 0.15);
+      this.armR.rotation.set(-0.1, 0, -0.1);
+      this.legsIdle();
       return;
     }
 
@@ -243,7 +295,8 @@ export class ClubberView {
       this.legsIdle();
       return;
     }
-    if (opts?.dancer) {
+    if (opts?.dancer || b.act === 4) {
+      // NPC dancers and players holding the dance button share the groove
       const g = Math.sin((beat + this.dancePhase) * Math.PI * 2);
       this.armL.rotation.set(-0.25 + g * 0.22, 0, 0.2);
       this.armR.rotation.set(-0.25 - g * 0.22, 0, -0.2);

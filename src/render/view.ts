@@ -155,12 +155,20 @@ export class View {
     );
     stallB.position.set(B.innerX, 1.15, B.innerZ + (R.d / 2 - B.innerZ) / 2);
     this.scene.add(stallA, stallB);
-    const toilet = new THREE.Mesh(
-      new THREE.BoxGeometry(0.44, 0.5, 0.44),
-      new THREE.MeshLambertMaterial({ color: 0x9fa3ad, flatShading: true }),
-    );
-    toilet.position.set(-7.4, 0.25, 5.45);
-    this.scene.add(toilet);
+    // the toilet: base + bowl + seat + tank — reads as a TOILET now (John),
+    // still standable (the physics collider box underneath is unchanged)
+    const porcelain = new THREE.MeshLambertMaterial({ color: 0xc9cdd6, flatShading: true });
+    const porcelainDim = new THREE.MeshLambertMaterial({ color: 0xa9adb8, flatShading: true });
+    const tBase = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.17, 0.3, 8), porcelainDim);
+    tBase.position.set(-7.4, 0.15, 5.45);
+    const tBowl = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.15, 0.16, 10), porcelain);
+    tBowl.position.set(-7.4, 0.36, 5.45);
+    const tSeat = new THREE.Mesh(new THREE.TorusGeometry(0.17, 0.035, 6, 12), porcelain);
+    tSeat.rotation.x = -Math.PI / 2;
+    tSeat.position.set(-7.4, 0.45, 5.45);
+    const tTank = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.34, 0.14), porcelain);
+    tTank.position.set(-7.4, 0.55, 5.75);
+    this.scene.add(tBase, tBowl, tSeat, tTank);
     this.doorPivot = new THREE.Group();
     this.doorPivot.position.set(B.doorHingeX, 0, B.innerZ);
     const doorPanel = new THREE.Mesh(
@@ -311,7 +319,10 @@ export class View {
           aimPitch: id === localId ? camPitch : 0,
         });
         cv.setHeadVisible(id !== localId); // first person: don't render your own head
-        cv.setBodyVisible(id !== localId); // ...or torso/legs — the camera is inside them
+        // own body: chest/waist hidden (the camera lives in there), but hips
+        // and legs SHOW — look down and your legs are stepping (John)
+        if (id === localId) cv.setFirstPersonBody();
+        else cv.setBodyVisible(true);
         // own arms only appear when they're DOING something (hold/reach/grip)
         cv.setArmsVisible(
           id !== localId || b.act === 1 || b.act === 3 || b.gripPoint !== null || holding !== null,
@@ -325,11 +336,13 @@ export class View {
       const i = this.npcs.length;
       const isMinion = i >= minionFrom && i < CONFIG.crowd.count - 1;
       const cv = new ClubberView(
-        // minions wear TRUE black — darker than anyone — with an earpiece
+        // minions wear TRUE black — darker than anyone — with an earpiece,
+        // and they're all the SAME height, clearly bigger than any clubgoer,
+        // in very white skin: big meaty germans (John)
         isMinion ? 0x08080b : colors.crowd[i % colors.crowd.length],
-        colors.skin[(i * 2 + 1) % colors.skin.length],
+        isMinion ? 0xf2e8e0 : colors.skin[(i * 2 + 1) % colors.skin.length],
         // taller than the player (1.0), with variety — you look UP at the crowd
-        isMinion ? 1.12 : 1.06 + ((i * 37) % 13) * 0.012,
+        isMinion ? 1.28 : 1.06 + ((i * 37) % 13) * 0.012,
         isMinion,
       );
       this.npcs.push(cv);
@@ -338,6 +351,7 @@ export class View {
     for (let i = 0; i < frame.npcs.length; i++)
       this.npcs[i].update(frame.npcs[i], dt, frame.beat, {
         grabTarget: gripTarget(frame.npcs[i]),
+        holdTarget: heldBy.get(`n${i}`) ?? null, // a dancer arrives holding a bag
         dancer: i < CONFIG.crowd.dancers,
         mixing: i === CONFIG.crowd.count - 1, // the DJ works the decks
         watching: i >= minionFrom && i < CONFIG.crowd.count - 1 ? frame.npcs[i].watch : 0,

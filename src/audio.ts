@@ -263,14 +263,36 @@ export class ClubAudio {
     o.stop(t + 0.22);
   }
 
+  // hats are BANDPASSED with the sizzle shaved off the top and a smooth
+  // exponential decay — raw highpassed white noise read as "a clipping mic",
+  // scratchy and grating (John). Metallic tick, not static.
   private hat(t: number, vol: number = CONFIG.music.hat): void {
-    const g = this.noiseBurst(t, 0.03, vol, 7000);
-    g.connect(this.master);
+    this.hatBurst(t, 0.035, vol * 0.85);
   }
 
   private openHat(t: number): void {
-    const g = this.noiseBurst(t, 0.13, CONFIG.music.hat * 1.05, 8200);
-    g.connect(this.master);
+    this.hatBurst(t, 0.12, CONFIG.music.hat * 0.9);
+  }
+
+  private hatBurst(t: number, dur: number, vol: number): void {
+    const ctx = this.ctx!;
+    const len = Math.max(1, Math.floor(ctx.sampleRate * dur));
+    const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.exp((-5.5 * i) / len);
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    const bp = ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.value = 7600;
+    bp.Q.value = 1.3;
+    const lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = 9800; // shave the scratchy top end
+    const g = ctx.createGain();
+    g.gain.value = vol;
+    src.connect(bp).connect(lp).connect(g).connect(this.master);
+    src.start(t);
   }
 
   private rim(t: number): void {
@@ -483,6 +505,7 @@ export class ClubAudio {
       else if (ev.t === 'pickup') this.thud(t, 0.2);
       else if (ev.t === 'throw') this.whoosh(t);
       else if (ev.t === 'dose') this.sniff(t);
+      else if (ev.t === 'knock') this.knock(t, ev.loud);
       else if (ev.t === 'eject') {
         // the door hits the frame behind somebody
         this.thud(t, 1);
@@ -495,6 +518,27 @@ export class ClubAudio {
   private whoosh(t: number): void {
     const g = this.noiseBurst(t, 0.12, 0.3, 900);
     g.connect(this.master);
+  }
+
+  /** knuckles on the stall door: hollow woody raps — unmistakably a knock.
+   *  The loud version is more raps, harder. */
+  private knock(t: number, loud: boolean): void {
+    const ctx = this.ctx!;
+    const raps = loud ? 4 : 2;
+    for (let i = 0; i < raps; i++) {
+      const rt = t + i * 0.16;
+      const o = ctx.createOscillator();
+      o.frequency.setValueAtTime(520, rt);
+      o.frequency.exponentialRampToValueAtTime(180, rt + 0.04);
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(loud ? 0.5 : 0.32, rt);
+      g.gain.exponentialRampToValueAtTime(0.001, rt + 0.09);
+      o.connect(g).connect(this.master);
+      o.start(rt);
+      o.stop(rt + 0.1);
+      const n = this.noiseBurst(rt, 0.02, loud ? 0.3 : 0.18, 900);
+      n.connect(this.master);
+    }
   }
 
   /** two quick high noise pulls — unmistakably a sniff */

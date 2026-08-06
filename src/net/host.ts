@@ -175,6 +175,7 @@ export class HostSession implements Session {
             grab: msg.g === 1,
             use: msg.u === 1,
             drop: msg.d === 1,
+            dance: msg.dn === 1,
           };
           if (msg.h === 1) remote.hopLatch = true;
           remote.lastInputAt = performance.now();
@@ -240,6 +241,23 @@ export class HostSession implements Session {
           if (r.fast?.open) r.fast.send(msg);
         }
       }
+    }
+  }
+
+  /** same lobby, same people, fresh club (John: the game-over screen needs a
+   *  restart). The peer connections never blink — only the sim is rebuilt. */
+  restart(): void {
+    this.sim = new Sim();
+    this.sim.addPlayer(this.localId);
+    for (const r of this.remotes.values()) {
+      if (r.admitted) this.sim.addPlayer(r.playerId);
+    }
+    this.prevSnap = this.sim.snapshot();
+    this.currSnap = this.prevSnap;
+    this.pendingEvents = [];
+    const msg: CtlMsg = { t: 'restart' };
+    for (const r of this.remotes.values()) {
+      if (r.ctl.open) r.ctl.send(msg);
     }
   }
 

@@ -112,8 +112,10 @@
         position: fixed;
         inset: 0;
         display: none;
+        flex-direction: column;
         align-items: center;
         justify-content: center;
+        gap: 26px;
         text-align: center;
         font-size: 32px;
         font-weight: 300;
@@ -124,13 +126,34 @@
         line-height: 2.2;
         z-index: 5;
       }
+      #btnRestart {
+        font-size: 16px;
+        letter-spacing: 3px;
+        padding: 10px 34px;
+        background: #17151f;
+        color: #dfe0e8;
+        border: 1px solid #3a3650;
+        cursor: pointer;
+      }
+      #btnRestart:hover {
+        background: #241f33;
+      }
+      #restartHint {
+        font-size: 13px;
+        letter-spacing: 2px;
+        opacity: 0.55;
+      }
     </style>
   </head>
   <body>
     <div id="app"></div>
     <div id="hud"></div>
     <div id="stambox"><div id="stamfill"></div></div>
-    <div id="bigmsg"></div>
+    <div id="bigmsg">
+      <span id="bigmsgText"></span>
+      <button id="btnRestart">RESTART THE NIGHT</button>
+      <span id="restartHint"></span>
+    </div>
     <div id="menu">
       <h1>BERGHAIN</h1>
       <div class="sub">BUILD 1 — THE TOY</div>
@@ -140,7 +163,7 @@
         <button id="btnJoin">JOIN</button>
       </div>
       <div class="hint">
-        first person — WASD move · mouse look · RMB grab / pick up · LMB use · Q drop (hold: throw) · SPACE hop<br />
+        first person — WASD move · mouse look · RMB grab / pick up · LMB use · Q drop (hold: throw) · SPACE hop · hold E dance<br />
         in-game proximity voice — ALLOW THE MIC when asked · V to mute · get close to be heard
       </div>
     </div>

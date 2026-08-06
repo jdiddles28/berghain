@@ -48,6 +48,9 @@ export interface Item {
   holder: Character | null;
   holderId: string | null;
   doses: number;
+  /** who loosed it and when — a thrown bag that clocks a minion is a strike */
+  thrownBy: Character | null;
+  thrownAt: number;
 }
 
 export class Character {
@@ -94,20 +97,26 @@ export class Character {
   home: { x: number; z: number };
   dancePhase = 0; // which beat this NPC hits
   isDJ = false; // mans the booth: no wandering, no hopping, walks back if moved
+  isDancer = false;
   isMinion = false; // the Curator's: silent, black-clad, watching
-  minionMode: 0 | 1 | 2 = 0; // patrol · scanning pause · hunting
+  // patrol · scanning pause · hunting (drag to the EXIT) · shooing off the
+  // DJ stand (drag to the floor) · stall barge (drag the camper out)
+  minionMode: 0 | 1 | 2 | 3 | 4 = 0;
   scanYaw: number | null = null;
   scanT = 0;
   huntTarget: Character | null = null;
+  losLostT = 0; // hunt memory: fully break line of sight for long enough → dropped
   // walker flow: position on the lap circuit
   loopAng = 0;
   loopDir = 1;
   lingerT = 0;
   flowT = 0;
-  // walker bathroom need
-  walkerMode: 0 | 1 | 2 | 3 | 4 = 0; // flow · queueing · entering · in stall · leaving
-  needT = 0;
+  // walker bathroom need. mode 5 = barging the stall (dragging the camper out)
+  walkerMode: 0 | 1 | 2 | 3 | 4 | 5 = 0; // flow · queueing · entering · in stall · leaving · barge
   stallT = 0;
+  knockAnimT = 0; // arm-rap animation window (act 5)
+  dancingNow = false; // player holding the dance button (act 4)
+  enteredFairAt = -100; // last sim-time this player entered the stall FROM the front of the line
 
   constructor(
     world: RAPIER.World,
@@ -151,8 +160,17 @@ export class Sim {
   npcs: Character[] = [];
   items: Item[] = [];
   doorBody!: RAPIER.RigidBody; // the stall door — a real hinged body
-  /** the bathroom line, NPCs and players alike, front first */
+  /** the bathroom line, NPCs and players alike, front first — REAL data
+   *  (John): who is in line for the door is tracked, not vibes */
   queue: Character[] = [];
+  /** global bathroom-need scheduler: one walker joins roughly per stall visit */
+  private needTimer = randRange(...CONFIG.bathroom.needEvery);
+  // STALL PRESSURE: the anti-camping escalation (knock → knock louder →
+  // barge → fetch a minion → fetch another…). Reset when the stall frees up.
+  private stallOccupant: Character | null = null;
+  private pressureT = 0;
+  private knocksFired = 0;
+  private minionsCalled = 0;
   /** live center of the dancing mass — dancers lump toward each other */
   private packCenter: { x: number; z: number } = {
     x: CONFIG.crowd.danceZone.x,
@@ -302,24 +320,34 @@ export class Sim {
       const spot = isDJ
         ? { x: CONFIG.room.dj.x, z: CONFIG.room.dj.z }
         : i < C.dancers
-          ? this.danceSpot()
+          ? this.danceSpot(i)
           : this.flowSpot(walkerAng);
-      const npc = new Character(this.world, cfg, spot.x, spot.z, false, i % C.danceEveryBeats);
+      const isMinion = !isDJ && i >= C.dancers + C.walkers;
+      // minions get their own BIG body (CONFIG.curator.body) — the bulk is
+      // what makes them out-pull a walking player in the drag tug-of-war
+      const npc = new Character(
+        this.world,
+        isMinion ? { ...CONFIG.curator.body } : cfg,
+        spot.x,
+        spot.z,
+        false,
+        i % C.danceEveryBeats,
+      );
       if (isDJ) {
         npc.isDJ = true;
         // the booth is up on the stage
         const p = npc.body.translation();
         npc.body.setTranslation({ x: p.x, y: p.y + CONFIG.room.stage.h, z: p.z }, true);
-      } else if (i >= C.dancers) {
+      } else if (i < C.dancers) {
+        npc.isDancer = true;
+      } else {
         npc.loopAng = walkerAng;
         npc.loopDir = Math.random() < C.flow.ccwShare ? 1 : -1;
         npc.flowT = randRange(...C.flow.lingerEvery);
-        if (i >= C.dancers + C.walkers) {
+        if (isMinion) {
           // the Curator's minions patrol the edges, silent, in black
           npc.isMinion = true;
           npc.scanT = randRange(...CONFIG.curator.scanEvery);
-        } else {
-          npc.needT = randRange(...CONFIG.bathroom.npcNeedEvery);
         }
       }
       this.npcs.push(npc);
@@ -327,13 +355,28 @@ export class Sim {
   }
 
   private spawnItems(): void {
-    // the first object in the game: a small bag of K on the DJ stand
-    const I = CONFIG.items;
+    // three bags of K in the room (John): on the DJ stand, tucked behind the
+    // toilet, and in a dancer's hand (snatchable like anything else held)
     const dj = CONFIG.room.dj;
     const s = CONFIG.room.stage;
+    this.makeBag(dj.x - 0.3, s.h + dj.boardH + 0.12, dj.boardZ + 0.02);
+    this.makeBag(-7.68, 0.1, 5.74); // behind the toilet, up against the corner
+    const holderNpc = this.npcs[4]; // one of the dancers came holding
+    const hb = this.makeBag(0, 1.2, 0);
+    if (holderNpc) {
+      hb.holder = holderNpc;
+      hb.holderId = null; // NPCs have no pid — snapItems maps them to n<idx>
+      holderNpc.holding = hb;
+      hb.body.setBodyType(RAPIER.RigidBodyType.KinematicPositionBased, true);
+      hb.collider.setSensor(true);
+    }
+  }
+
+  private makeBag(x: number, y: number, z: number): Item {
+    const I = CONFIG.items;
     const body = this.world.createRigidBody(
       RAPIER.RigidBodyDesc.dynamic()
-        .setTranslation(dj.x - 0.3, s.h + dj.boardH + 0.12, dj.boardZ + 0.02)
+        .setTranslation(x, y, z)
         .setLinearDamping(0.4)
         .setAngularDamping(1.2)
         .setCcdEnabled(true),
@@ -346,21 +389,36 @@ export class Sim {
       body,
     );
     col.setMass(I.kbag.mass);
-    this.items.push({
+    const it: Item = {
       kind: 0,
       body,
       collider: col,
       holder: null,
       holderId: null,
       doses: CONFIG.ketamine.dosesPerBag,
-    });
+      thrownBy: null,
+      thrownAt: 0,
+    };
+    this.items.push(it);
+    return it;
   }
 
-  private danceSpot(): { x: number; z: number } {
+  /** sunflower layout: evenly spaced, no overlaps — 30 randomly-thrown
+   *  dancers kept spawning inside each other and the solver's blast-apart
+   *  seeded knockdown avalanches before the music even started */
+  private danceSpot(i: number): { x: number; z: number } {
     const Z = CONFIG.crowd.danceZone;
-    const a = Math.random() * Math.PI * 2;
-    const r = Math.sqrt(Math.random()) * Z.r;
-    return { x: Z.x + Math.cos(a) * r, z: Z.z + Math.sin(a) * r };
+    const n = CONFIG.crowd.dancers;
+    const r = Z.r * Math.sqrt((i + 0.5) / n);
+    const a = i * 2.39996; // golden angle
+    const x = Z.x + Math.cos(a) * r + (Math.random() - 0.5) * 0.12;
+    // kept off the stage lip (they tripped on it, and walled off the DJ's way
+    // back). REFLECTED, not clamped — clamping projected everyone south of
+    // the line onto one row of overlapping bodies
+    let z = Z.z + Math.sin(a) * r + (Math.random() - 0.5) * 0.12;
+    const minZ = CONFIG.crowd.danceZoneMinZ;
+    if (z < minZ) z = 2 * minZ - z;
+    return { x, z };
   }
 
   /** a point on the walkers' lap circuit: an ellipse inside the walls, pushed
@@ -441,10 +499,13 @@ export class Sim {
     }
     this.updatePackCenter();
     this.updateQueue();
+    this.updateNeedScheduler(dt);
+    this.updateStallPressure(dt);
     for (const npc of this.npcs) {
       this.updateNpcBrain(npc, dt);
     }
     this.updateCurator(dt);
+    this.updateThrownItems();
     this.applyCrowdSeparation(dt);
     this.updateGrips();
     this.updateHeldItems();
@@ -464,6 +525,7 @@ export class Sim {
     ch.stateT += dt;
     ch.hopCd = Math.max(0, ch.hopCd - dt);
     ch.staggerT = Math.max(0, ch.staggerT - dt);
+    ch.knockAnimT = Math.max(0, ch.knockAnimT - dt);
     ch.hitAccum = Math.max(0, ch.hitAccum - (CONFIG.balance.impulseFall / CONFIG.balance.impulseWindow) * dt);
 
     if (ch.isPlayer) this.updateKetamine(ch, input, dt);
@@ -541,15 +603,18 @@ export class Sim {
     const staggered = ch.staggerT > 0;
     const springScale =
       (ch.state === 2 ? Math.min(1, ch.stateT / CONFIG.balance.getupRamp) : 1) *
-      (ch.grip ? CONFIG.grab.holderKpMult : 1) *
+      (ch.grip && !ch.isMinion ? CONFIG.grab.holderKpMult : 1) *
       (staggered ? CONFIG.balance.staggerSpringMult : 1);
     this.applyUprightSpring(ch, springScale, eff, dt);
 
     // movement force toward desired velocity — staggered bodies lose their
     // motor control, which is what lets a body check actually LAND
     const grounded = this.isGrounded(ch);
+    // minions are exempt from the hauling penalty — a bouncer's grip does not
+    // slow the bouncer (that exemption IS the tug-of-war: their drag force
+    // beats a walking player, loses barely to a sprinting one)
     const speedMult =
-      (ch.grip ? CONFIG.grab.holderSpeedMult : 1) *
+      (ch.grip && !ch.isMinion ? CONFIG.grab.holderSpeedMult : 1) *
       (input.sprint && ch.isPlayer && !ch.grip ? CONFIG.body.sprintMult : 1) *
       (ch.isPlayer ? Math.max(0.3, 1 - CONFIG.ketamine.speedPenalty * ch.kFelt) : 1);
     const targetVx = mvX * ch.cfg.moveSpeed * speedMult;
@@ -574,6 +639,22 @@ export class Sim {
       const lv = ch.body.linvel();
       ch.body.setLinvel({ x: lv.x, y: CONFIG.body.hopVel, z: lv.z }, true);
       ch.hopCd = CONFIG.body.hopCooldown;
+    }
+
+    // dance (hold E): the same genuine beat-bounce the NPC dancers do — no
+    // purpose yet (John: it just needs to exist so hiding in the crowd reads).
+    // Moving cancels it; the bounce itself is real physics, not an animation.
+    ch.dancingNow =
+      ch.isPlayer && input.dance && ch.state === 0 && Math.hypot(input.moveX, input.moveZ) < 0.1;
+    if (ch.dancingNow && grounded) {
+      const C = CONFIG.crowd;
+      const beatLen = 60 / CONFIG.music.bpm;
+      const beatNum = Math.floor(this.time / beatLen);
+      const prevBeatNum = Math.floor((this.time - dt) / beatLen);
+      if (beatNum !== prevBeatNum && beatNum % C.danceEveryBeats === 0) {
+        const lv = ch.body.linvel();
+        ch.body.setLinvel({ x: lv.x, y: Math.max(lv.y, C.bounceVel), z: lv.z }, true);
+      }
     }
 
     if (ch.isPlayer) this.updateItemVerbs(ch, input, dt);
@@ -756,6 +837,12 @@ export class Sim {
       targetYaw = Math.atan2(input.moveX, input.moveZ);
     else if (ch.isMinion && ch.scanYaw !== null) targetYaw = ch.scanYaw; // sweeping the room
     else if (ch.isDJ) targetYaw = 0; // behind the decks, facing the floor (+z)
+    else if (ch.isDancer) {
+      // every dancer faces the decks (John) — the floor points AT the DJ
+      const p = ch.pos();
+      const dj = CONFIG.room.dj;
+      targetYaw = Math.atan2(dj.x - p.x, dj.z - p.z);
+    }
     if (targetYaw !== null) {
       const gain = ch.isPlayer ? CONFIG.body.yawGain : 60;
       const damp = ch.isPlayer ? CONFIG.body.yawDamp : 12;
@@ -807,14 +894,22 @@ export class Sim {
     // room on the frictionless character capsule (restored when they rise)
     ch.body.setLinearDamping(CONFIG.balance.downLinearDamping);
     ch.collider.setFriction(CONFIG.balance.downFriction);
-    this.releaseGrip(ch); // you drop what YOU hold; grips ON you keep dragging — that's the toy
+    // EVERY entity loses its grip when it falls (John) — this is the rescue:
+    // floor the minion dragging your friend and the grip is gone
+    this.releaseGrip(ch);
     if (ch.holding) this.releaseItem(ch, 0, null);
-    // flooring someone with a minion watching = an instant chunk of heat
     if (ch.checkedBy && this.time - ch.checkedAt < 1.5 && this.phase === 0) {
-      for (const m of this.npcs) {
-        if (m.isMinion && m.state === 0 && this.minionSees(m, ch)) {
-          ch.checkedBy.heat = Math.min(1.2, ch.checkedBy.heat + CONFIG.curator.heatKnockdown);
-          break;
+      if (ch.isMinion) {
+        // flooring one of the Curator's own = grounds for expulsion, no
+        // witnesses needed — the minion FELT it (John's ruling)
+        ch.checkedBy.heat = Math.max(ch.checkedBy.heat, CONFIG.curator.ejectAt);
+      } else {
+        // flooring a clubber with a minion watching = an instant chunk of heat
+        for (const m of this.npcs) {
+          if (m.isMinion && m.state === 0 && this.minionSees(m, ch)) {
+            ch.checkedBy.heat = Math.min(1.2, ch.checkedBy.heat + CONFIG.curator.heatKnockdown);
+            break;
+          }
         }
       }
       ch.checkedBy = null;
@@ -852,7 +947,8 @@ export class Sim {
       it.holder.useT = 0;
     }
     it.holder = ch;
-    it.holderId = ch.pid;
+    it.holderId = ch.pid || null;
+    it.thrownBy = null;
     ch.holding = it;
     it.body.setBodyType(RAPIER.RigidBodyType.KinematicPositionBased, true);
     it.collider.setSensor(true);
@@ -887,6 +983,8 @@ export class Sim {
         };
         const l = Math.hypot(dir.x, dir.y, dir.z) || 1;
         dir = { x: dir.x / l, y: dir.y / l, z: dir.z / l };
+        it.thrownBy = ch;
+        it.thrownAt = this.time;
         this.emit({ t: 'throw', ...hp });
       } else {
         // tap: a soft underhand release, not a launch
@@ -1005,7 +1103,9 @@ export class Sim {
       const vb = ch.grip.body.linvel();
       const relV = (vb.x - va.x) * dir.x + (vb.y - va.y) * dir.y + (vb.z - va.z) * dir.z;
       let f = (dist - G.restLen) * G.springK + relV * G.springDamp;
-      f = clampN(f, G.maxForce);
+      // a bouncer's grip transmits real force — an ordinary grab would slip
+      // before it ever moved a resisting body
+      f = clampN(f, ch.isMinion ? CONFIG.curator.gripMaxForce : G.maxForce);
       ch.grip.body.addForceAtPoint(
         { x: -dir.x * f, y: -dir.y * f * 0.35, z: -dir.z * f },
         attach,
@@ -1059,7 +1159,7 @@ export class Sim {
 
   private updateNpcBrain(npc: Character, dt: number): void {
     const C = CONFIG.crowd;
-    const isDancer = this.npcs.indexOf(npc) < C.dancers;
+    const isDancer = npc.isDancer;
     const beatLen = 60 / CONFIG.music.bpm;
     const beatNum = Math.floor(this.time / beatLen);
     const prevBeatNum = Math.floor((this.time - dt) / beatLen);
@@ -1109,13 +1209,15 @@ export class Sim {
           npc.body.applyImpulse({ x: Math.cos(ang) * mag, y: 0, z: Math.sin(ang) * mag }, true);
         }
         // lump toward the mass: shoved out (or freshly back on their feet),
-        // they walk back to wherever the pack IS now
+        // they SHUFFLE back to wherever the pack is now — at amble pace, not a
+        // march (30 dancers converging at full speed crushed the middle and
+        // the contact solver started flooring people)
         const hx = this.packCenter.x - p.x;
         const hz = this.packCenter.z - p.z;
         const hd = Math.hypot(hx, hz);
         if (hd > C.packRadius) {
-          input.moveX = hx / hd;
-          input.moveZ = hz / hd;
+          input.moveX = (hx / hd) * 0.7;
+          input.moveZ = (hz / hd) * 0.7;
         }
       } else if (npc.isMinion) {
         this.minionBrain(npc, input, p, dt);
@@ -1127,7 +1229,9 @@ export class Sim {
   }
 
   /** walk the flow circuit: continuous laps of the room in streams — the
-   *  moving crowd you push through and get swept along by */
+   *  moving crowd you push through and get swept along by. The circuit is a
+   *  U, not an O (John): the stage/dancefloor strip is nobody's walkway —
+   *  reaching either end of the U turns the walker around. */
   private flowWalk(npc: Character, input: PlayerInput, p: RAPIER.Vector3, mult: number): void {
     const F = CONFIG.crowd.flow;
     let tgt = this.flowSpot(npc.loopAng);
@@ -1136,6 +1240,11 @@ export class Sim {
     let hd = Math.hypot(hx, hz);
     if (hd < F.reachDist) {
       npc.loopAng += F.stepAng * npc.loopDir;
+      if (Math.sin(npc.loopAng) < F.uTurnSin) {
+        // end of the U — about-face and head back the other way
+        npc.loopDir *= -1;
+        npc.loopAng += F.stepAng * 2 * npc.loopDir;
+      }
       tgt = this.flowSpot(npc.loopAng);
       hx = tgt.x - p.x;
       hz = tgt.z - p.z;
@@ -1143,6 +1252,46 @@ export class Sim {
     }
     input.moveX = (hx / hd) * mult;
     input.moveZ = (hz / hd) * mult;
+  }
+
+  /** stall-aware seek: the door gap is the only way in or out of the stall,
+   *  and it's around the corner from the queue — straight-line seeking
+   *  walked NPCs into the partition walls forever (John's playtest). Routes
+   *  via the doorway waypoints whenever the path crosses the stall boundary. */
+  private routeTo(
+    input: PlayerInput,
+    p: RAPIER.Vector3,
+    tx: number,
+    tz: number,
+    mult: number,
+    arrive = 0.35,
+  ): number {
+    const B = CONFIG.bathroom;
+    const insideMe = this.inStall(p);
+    const insideTgt = tx < B.innerX - 0.1 && tz > B.innerZ + 0.1;
+    if (insideMe === insideTgt) {
+      // same side — but don't cut the corner of the queue pocket into a wall
+      this.seekInput(input, p, tx, tz, mult, arrive);
+      return Math.hypot(tx - p.x, tz - p.z);
+    }
+    if (insideMe) {
+      // out: line up with the door from the inside, push through, then go
+      if (Math.abs(p.x - B.doorMidX) > 0.45) {
+        this.seekInput(input, p, B.doorMidX, B.innerZ + 0.6, mult, 0.25);
+      } else {
+        this.seekInput(input, p, B.outsidePoint.x, B.outsidePoint.z, mult, 0.25);
+      }
+    } else {
+      // in: around the queue-pocket corner, in front of the door, push through
+      if (p.x > B.innerX + 0.15 && p.z > B.innerZ + 0.15) {
+        this.seekInput(input, p, B.innerX + 0.55, B.innerZ - 0.6, mult, 0.25);
+      } else if (Math.abs(p.x - B.doorMidX) > 0.45 || p.z < B.outsidePoint.z - 0.4) {
+        this.seekInput(input, p, B.outsidePoint.x, B.outsidePoint.z, mult, 0.25);
+      } else {
+        this.seekInput(input, p, B.doorMidX, B.innerZ + 0.7, mult, 0.25);
+      }
+    }
+    return Math.hypot(tx - p.x, tz - p.z);
   }
 
   private seekInput(
@@ -1163,20 +1312,16 @@ export class Sim {
     return d;
   }
 
-  /** walkers: lap the room, pause sometimes — and every so often they need
-   *  the stall: join the line, hold their place (yours too), push through the
-   *  door, take their time, come back out */
+  /** walkers: lap the room, pause sometimes — and when the global need
+   *  scheduler taps them: join the line, hold their place (yours too), route
+   *  through the door, take their time, come back out. Mode 5 is the barge:
+   *  the front of a stonewalled line forcing the door and dragging the
+   *  camper out — not to eject them, just to finally have their turn. */
   private walkerBrain(npc: Character, input: PlayerInput, p: RAPIER.Vector3, dt: number): void {
     const C = CONFIG.crowd;
     const B = CONFIG.bathroom;
     switch (npc.walkerMode) {
       case 0: {
-        npc.needT -= dt;
-        if (npc.needT <= 0 && this.queue.length < B.queueSlots) {
-          this.queue.push(npc);
-          npc.walkerMode = 1;
-          break;
-        }
         const F = C.flow;
         if (npc.lingerT > 0) {
           npc.lingerT -= dt;
@@ -1196,7 +1341,6 @@ export class Sim {
         const idx = this.queue.indexOf(npc);
         if (idx === -1) {
           npc.walkerMode = 0;
-          npc.needT = 8;
           break;
         }
         const slot = this.slotPos(idx);
@@ -1217,7 +1361,7 @@ export class Sim {
           npc.walkerMode = 1;
           break;
         }
-        const d = this.seekInput(input, p, -7.1, 4.95, 0.8, 0.3);
+        const d = this.routeTo(input, p, B.insidePoint.x, B.insidePoint.z, 0.8, 0.3);
         if (this.inStall(p) && d < 0.7) {
           npc.walkerMode = 3;
           npc.stallT = randRange(...B.npcUseTime);
@@ -1226,15 +1370,35 @@ export class Sim {
       }
       case 3: {
         npc.stallT -= dt;
-        this.seekInput(input, p, -7.3, 5.3, 0.6, 0.45);
+        this.routeTo(input, p, B.insidePoint.x, B.insidePoint.z, 0.6, 0.45);
         if (npc.stallT <= 0) npc.walkerMode = 4;
         break;
       }
       case 4: {
-        this.seekInput(input, p, -6.2, 3.0, 0.8, 0.3);
-        if (p.z < B.innerZ - 0.5) {
-          npc.walkerMode = 0;
-          npc.needT = randRange(...B.npcNeedEvery);
+        this.routeTo(input, p, -5.0, 2.4, 0.8, 0.4);
+        if (!this.inStall(p) && p.z < B.innerZ - 0.4) npc.walkerMode = 0;
+        break;
+      }
+      case 5: {
+        // the barge. Target: whoever is camping the stall.
+        const t = this.stallOccupant;
+        if (!t || !this.inStall(t.pos())) {
+          // they're out (or gone) — take the turn that was owed
+          if (npc.grip) this.releaseGrip(npc);
+          npc.walkerMode = 2;
+          break;
+        }
+        const tp = t.pos();
+        if (npc.grip && npc.grip.body === t.body) {
+          // haul them out to the dump spot, then let go
+          this.routeTo(input, p, B.dragOutPoint.x, B.dragOutPoint.z, 0.95, 0.3);
+        } else {
+          npc.grip = null;
+          const d = this.routeTo(input, p, tp.x, tp.z, 0.9, 0.2);
+          if (d < 0.85 && npc.state === 0) {
+            npc.grip = { body: t.body, local: { x: 0, y: 0.2, z: 0 } };
+            this.emit({ t: 'grab', x: tp.x, y: tp.y, z: tp.z, on: true });
+          }
         }
         break;
       }
@@ -1248,29 +1412,79 @@ export class Sim {
   private minionBrain(npc: Character, input: PlayerInput, p: RAPIER.Vector3, dt: number): void {
     const CU = CONFIG.curator;
     const C = CONFIG.crowd;
-    if (npc.minionMode === 2) {
-      const t = npc.huntTarget;
-      if (!t || t.out || this.phase === 1) {
-        npc.minionMode = 0;
-        npc.huntTarget = null;
-        npc.grip = null;
-        npc.scanT = randRange(...CU.scanEvery);
-        return;
+    const giveUp = () => {
+      if (npc.grip) this.releaseGrip(npc);
+      npc.minionMode = 0;
+      npc.huntTarget = null;
+      npc.losLostT = 0;
+      npc.scanYaw = null;
+      npc.scanT = randRange(...CU.scanEvery);
+    };
+    // blocked mid-chase → a hop, and minions jump a little higher than
+    // players (the DJ stand is not a refuge, John)
+    const chaseHop = () => {
+      const v = npc.body.linvel();
+      if (npc.hopCd <= 0 && Math.hypot(v.x, v.z) < 0.4 && this.isGrounded(npc)) {
+        npc.body.setLinvel({ x: v.x, y: CU.hopVel, z: v.z }, true);
+        npc.hopCd = CONFIG.body.hopCooldown * 1.6;
       }
+    };
+
+    if (npc.minionMode === 2 || npc.minionMode === 3 || npc.minionMode === 4) {
+      const t = npc.huntTarget;
+      if (!t || t.out || this.phase === 1) return giveUp();
       const tp = t.pos();
+      // shoo (3): done once they're off the stand. barge (4): done once
+      // they're out of the stall. hunt (2): done at the exit — ejected.
+      if (npc.minionMode === 3 && !this.onBooth(t) && !npc.grip) return giveUp();
+      if (npc.minionMode === 4 && !this.inStall(tp) && !npc.grip) return giveUp();
       if (npc.grip && npc.grip.body === t.body) {
-        // the walk of shame
-        const E = CONFIG.room.exit;
-        this.seekInput(input, p, E.x, E.z - 0.35, CU.dragSpeed / C.moveSpeed, 0.25);
-        if (Math.hypot(tp.x - E.x, tp.z - E.z) < CU.ejectDist) this.ejectPlayer(t, npc);
+        const dest =
+          npc.minionMode === 2
+            ? { x: CONFIG.room.exit.x, z: CONFIG.room.exit.z - 0.35 }
+            : npc.minionMode === 3
+              ? { x: 0, z: -2.2 } // off the stand, onto the floor
+              : CONFIG.bathroom.dragOutPoint;
+        this.routeTo(input, p, dest.x, dest.z, CU.dragSpeed / C.moveSpeed, 0.25);
+        chaseHop();
+        if (npc.minionMode === 2) {
+          const E = CONFIG.room.exit;
+          if (Math.hypot(tp.x - E.x, tp.z - E.z) < CU.ejectDist) this.ejectPlayer(t, npc);
+        } else if (npc.minionMode === 3) {
+          if (!this.onBooth(t) && tp.y < 0.6) {
+            this.releaseGrip(npc);
+            giveUp();
+          }
+        } else if (!this.inStall(tp) && Math.hypot(tp.x - p.x, tp.z - p.z) < 1.4) {
+          const B = CONFIG.bathroom;
+          if (Math.hypot(tp.x - B.dragOutPoint.x, tp.z - B.dragOutPoint.z) < 0.9) {
+            this.releaseGrip(npc);
+            giveUp();
+          }
+        }
       } else {
         npc.grip = null; // torn off (or we got floored) — after them again
+        // hunt memory (John): fully break line of sight and they FORGET you.
+        // Gripping and shoo/barge targets (they know exactly where you are)
+        // don't need eyes.
+        if (npc.minionMode === 2) {
+          if (this.minionSees(npc, t)) npc.losLostT = 0;
+          else {
+            npc.losLostT += dt;
+            if (npc.losLostT >= CU.losForget) {
+              t.heat = Math.min(t.heat, CU.losCooldownHeat);
+              return giveUp();
+            }
+          }
+        }
         const d = Math.hypot(tp.x - p.x, tp.z - p.z);
-        if (d < CU.catchDist) {
+        const canGrab = npc.minionMode === 3 ? d < CU.catchDist + 0.35 : d < CU.catchDist;
+        if (canGrab && npc.state === 0) {
           npc.grip = { body: t.body, local: { x: 0, y: 0.2, z: 0 } };
           this.emit({ t: 'grab', x: tp.x, y: tp.y, z: tp.z, on: true });
         } else {
-          this.seekInput(input, p, tp.x, tp.z, CU.hunterSpeed / C.moveSpeed, 0.2);
+          this.routeTo(input, p, tp.x, tp.z, CU.hunterSpeed / C.moveSpeed, 0.2);
+          chaseHop();
         }
       }
       return;
@@ -1296,6 +1510,17 @@ export class Sim {
     this.flowWalk(npc, input, p, 0.72);
   }
 
+  /** standing on the DJ stand / stage — off limits (John) */
+  private onBooth(ch: Character): boolean {
+    const s = CONFIG.room.stage;
+    const p = ch.pos();
+    return (
+      p.y > s.h * 0.75 &&
+      Math.abs(p.x - s.x) < s.w / 2 + 0.3 &&
+      p.z < s.z + s.d / 2 + 0.35
+    );
+  }
+
   // ---------- the Curator ----------
 
   /** players and NPCs hold their places in the bathroom line. A player joins
@@ -1312,7 +1537,12 @@ export class Sim {
         }
       } else {
         const slot = this.slotPos(idx);
-        if (Math.hypot(pp.x - slot.x, pp.z - slot.z) > 1.8 || this.inStall(pp)) {
+        if (this.inStall(pp)) {
+          // going in from the FRONT of the line is fair — anything else is a
+          // line cut, and the stall-pressure system skips straight to the barge
+          if (idx === 0) p.enteredFairAt = this.time;
+          this.queue.splice(idx, 1);
+        } else if (Math.hypot(pp.x - slot.x, pp.z - slot.z) > 1.8) {
           this.queue.splice(idx, 1);
         }
       }
@@ -1321,6 +1551,108 @@ export class Sim {
     for (let i = this.queue.length - 1; i >= 0; i--) {
       const ch = this.queue[i];
       if (!ch.isPlayer && ch.walkerMode !== 1) this.queue.splice(i, 1);
+    }
+  }
+
+  /** the club RUNS ITSELF (John): a global scheduler sends one walker to the
+   *  bathroom roughly every stall-visit, so the line holds at 3-4 — and
+   *  balloons hilariously when players camp the stall. */
+  private updateNeedScheduler(dt: number): void {
+    this.needTimer -= dt;
+    if (this.needTimer > 0) return;
+    this.needTimer = randRange(...CONFIG.bathroom.needEvery);
+    if (this.queue.length >= CONFIG.bathroom.queueSlots) return;
+    const candidates = this.npcs.filter(
+      (n) => !n.isMinion && !n.isDJ && !n.isDancer && n.walkerMode === 0 && n.state === 0,
+    );
+    if (candidates.length === 0) return;
+    const pick = candidates[Math.floor(Math.random() * candidates.length)];
+    this.queue.push(pick);
+    pick.walkerMode = 1;
+  }
+
+  /** STALL PRESSURE (John): there's no lock, so camping the stall is a legal
+   *  strategy — hide a wrecked friend in there, block the door with a body —
+   *  but never a free one. The front of the line knocks at 30 s, knocks
+   *  LOUDER at 45 s, forces the door and drags the camper out at 60 s (just
+   *  for their turn, not an ejection), and past that they fetch the Curator's
+   *  muscle, one more minion per minute. Applies to NPC campers too — the
+   *  club is a simulation that runs with zero players involved. */
+  private updateStallPressure(dt: number): void {
+    const B = CONFIG.bathroom;
+    // who is in there?
+    let occ: Character | null = null;
+    for (const ch of this.allChars()) {
+      if (!ch.out && this.inStall(ch.pos())) {
+        occ = ch;
+        break;
+      }
+    }
+    if (occ !== this.stallOccupant) {
+      // fresh occupant (or freed up): the meter starts over. A player who CUT
+      // the line while people were waiting skips the polite phase entirely —
+      // the barge-and-drag loop starts immediately (John).
+      this.stallOccupant = occ;
+      const cut =
+        occ !== null &&
+        occ.isPlayer &&
+        this.queue.length > 0 &&
+        this.time - occ.enteredFairAt > 4;
+      this.pressureT = cut ? B.bargeAt : 0;
+      this.knocksFired = cut ? 2 : 0;
+      this.minionsCalled = 0;
+      for (const n of this.npcs) {
+        if (n.walkerMode === 5 && (!occ || n.grip?.body !== occ.body)) {
+          if (n.grip) this.releaseGrip(n);
+          n.walkerMode = 2; // door's free (or a new camper) — try for the turn
+        }
+        if (n.minionMode === 4 && (!occ || n.huntTarget !== occ)) {
+          if (n.grip) this.releaseGrip(n);
+          n.minionMode = 0;
+          n.huntTarget = null;
+          n.scanT = randRange(...CONFIG.curator.scanEvery);
+        }
+      }
+      return;
+    }
+    if (!occ) return;
+    // an NPC in mode 3 is USING the stall, not camping it
+    if (!occ.isPlayer && occ.walkerMode === 3) return;
+    // pressure builds only while someone is actually waiting (an NPC at the
+    // front of the line, or one already mid-barge)
+    const front = this.queue[0];
+    const frontNpcWaiting = !!front && !front.isPlayer && front.walkerMode === 1;
+    const barger = this.npcs.find((n) => n.walkerMode === 5);
+    if (!frontNpcWaiting && !barger) return;
+    this.pressureT += dt;
+
+    // knocks: a simple arm rap you can hear through the door — it is VERY
+    // clear what they want (John)
+    const knocker = barger ?? front!;
+    if (this.knocksFired === 0 && this.pressureT >= B.knockAt) {
+      this.knocksFired = 1;
+      knocker.knockAnimT = 1.0;
+      this.emit({ t: 'knock', ...vec(knocker.pos()), loud: false });
+    } else if (this.knocksFired === 1 && this.pressureT >= B.knock2At) {
+      this.knocksFired = 2;
+      knocker.knockAnimT = 1.2;
+      this.emit({ t: 'knock', ...vec(knocker.pos()), loud: true });
+    }
+    // the barge: the front NPC stops waiting and goes in after their turn
+    if (this.pressureT >= B.bargeAt && frontNpcWaiting && !barger) {
+      front!.walkerMode = 5; // updateQueue drops them from the line
+    }
+    // still blocked → the muscle arrives, one more per minute
+    if (this.pressureT >= B.minionAt + this.minionsCalled * B.minionEvery) {
+      const free = this.npcs.find(
+        (n) => n.isMinion && n.state === 0 && n.minionMode !== 2 && n.minionMode !== 4,
+      );
+      if (free) {
+        this.minionsCalled++;
+        free.minionMode = 4;
+        free.huntTarget = occ;
+        free.scanYaw = null;
+      }
     }
   }
 
@@ -1370,10 +1702,23 @@ export class Sim {
     if (this.phase === 0) {
       for (const m of this.npcs) {
         if (!m.isMinion) continue;
-        m.watchSignal = 0;
+        // the red head is the observed-tell (John): it BUILDS with how
+        // suspicious the person they're looking at is, and stays fully lit
+        // while they're on the job (hunt/shoo/barge)
+        m.watchSignal = m.minionMode >= 2 ? 1 : 0;
         if (m.state !== 0) continue;
         for (const p of this.players.values()) {
-          if (p.out || !this.minionSees(m, p)) continue;
+          if (p.out) continue;
+          // holding onto a minion fills the bar FAST — grab-and-release is
+          // survivable, dragging one around the club is not (John)
+          if (p.grip && p.grip.body === m.body) {
+            p.heat = Math.min(1.2, p.heat + CU.heatGrabbed * dt);
+            p.heatObs = true;
+            m.watchSignal = Math.max(m.watchSignal, 0.6 + 0.4 * Math.min(1, p.heat));
+            watchNow.set(p, Math.max(watchNow.get(p)!, 0.8));
+            if (m.minionMode < 2) m.scanYaw = null; // they notice, believe me
+          }
+          if (!this.minionSees(m, p)) continue;
           const mp = m.pos();
           const pp = p.pos();
           const gaze = 1 - Math.hypot(pp.x - mp.x, pp.z - mp.z) / CU.viewRange;
@@ -1386,11 +1731,37 @@ export class Sim {
             (p.kLevel >= CONFIG.ketamine.maxLevel || p.staminaDown || p.stateT > 4)
           )
             rate = CU.heatDown;
+          else if (this.onBooth(p)) rate = CU.heatBooth; // the stand is off limits
           else if (p.state === 0 && p.kFelt >= CU.wreckedAt) rate = CU.heatWrecked;
-          m.watchSignal = Math.max(m.watchSignal, rate > 0 ? gaze : gaze * 0.45);
+          // gradual redness: an idle glance is faint; eyes on someone whose
+          // suspicion is climbing glow harder and harder
+          const heatFrac = Math.min(1, p.heat / CU.ejectAt);
+          m.watchSignal = Math.max(
+            m.watchSignal,
+            rate > 0 ? gaze * (0.55 + 0.45 * heatFrac) : gaze * (0.3 + 0.5 * heatFrac),
+          );
           if (rate > 0) {
             p.heat = Math.min(1.2, p.heat + rate * (0.6 + 0.4 * gaze) * dt);
             p.heatObs = true;
+          }
+          // seen ON the booth → the nearest free minion comes to pull you off
+          // (a shoo, not an ejection — unless the meter fills while you resist)
+          if (rate === CU.heatBooth && this.onBooth(p) && p.heat < CU.ejectAt) {
+            this.assignMinion(p, 3);
+          }
+        }
+        // a minion that SEES a colleague dragging someone comes to HELP —
+        // two sets of hands out-pull any amount of sprinting (John)
+        if (m.minionMode < 2) {
+          for (const h of this.npcs) {
+            if (!h.isMinion || h === m || h.minionMode !== 2 || !h.huntTarget) continue;
+            if (h.grip?.body === h.huntTarget.body && this.minionSees(m, h)) {
+              m.minionMode = 2;
+              m.huntTarget = h.huntTarget;
+              m.losLostT = 0;
+              m.scanYaw = null;
+              break;
+            }
           }
         }
       }
@@ -1401,28 +1772,74 @@ export class Sim {
       p.watchSignal += (w - p.watchSignal) * Math.min(1, dt * 6);
       // over the line: the nearest free minion comes for them
       if (p.heat >= CU.ejectAt && !p.out && this.phase === 0) {
-        let hunter: Character | null = null;
-        let best = Infinity;
-        let already = false;
-        for (const m of this.npcs) {
-          if (!m.isMinion) continue;
-          if (m.huntTarget === p) {
-            already = true;
-            break;
-          }
-          if (m.minionMode === 2) continue;
-          const mp = m.pos();
-          const pp = p.pos();
-          const d = Math.hypot(mp.x - pp.x, mp.z - pp.z);
-          if (d < best) {
-            best = d;
-            hunter = m;
-          }
+        this.assignMinion(p, 2);
+      }
+    }
+  }
+
+  /** put the nearest available minion on a target. Mode 2 (ejection)
+   *  outranks a shoo — a minion already shooing this target upgrades. */
+  private assignMinion(target: Character, mode: 2 | 3): void {
+    let pick: Character | null = null;
+    let best = Infinity;
+    for (const m of this.npcs) {
+      if (!m.isMinion || m.state !== 0) continue;
+      if (m.huntTarget === target) {
+        if (mode === 2 && (m.minionMode === 3 || m.minionMode === 4)) {
+          m.minionMode = 2; // the shoo/barge just became the walk of shame
+          m.losLostT = 0;
         }
-        if (!already && hunter) {
-          hunter.minionMode = 2;
-          hunter.huntTarget = p;
-          hunter.scanYaw = null;
+        return; // someone is already on them
+      }
+      const free = m.minionMode === 0 || m.minionMode === 1;
+      if (!free) continue;
+      const mp = m.pos();
+      const tp = target.pos();
+      const d = Math.hypot(mp.x - tp.x, mp.z - tp.z);
+      if (d < best) {
+        best = d;
+        pick = m;
+      }
+    }
+    if (pick) {
+      pick.minionMode = mode;
+      pick.huntTarget = target;
+      pick.losLostT = 0;
+      pick.scanYaw = null;
+    }
+  }
+
+  /** a thrown object clocking a minion pisses them off (John): they turn to
+   *  see who threw it, and that's a chunk of heat on the thrower. */
+  private updateThrownItems(): void {
+    const CU = CONFIG.curator;
+    for (const it of this.items) {
+      if (!it.thrownBy || it.holder) continue;
+      const v = it.body.linvel();
+      if (this.time - it.thrownAt > 3 || Math.hypot(v.x, v.y, v.z) < 0.8) {
+        it.thrownBy = null;
+        continue;
+      }
+      const ip = it.body.translation();
+      for (const m of this.npcs) {
+        if (!m.isMinion || m.state !== 0) continue;
+        const mp = m.pos();
+        if (
+          Math.hypot(ip.x - mp.x, ip.z - mp.z) < m.cfg.radius + 0.35 &&
+          Math.abs(ip.y - (mp.y + 0.3)) < 0.9
+        ) {
+          const th = it.thrownBy;
+          it.thrownBy = null;
+          if (th.isPlayer && !th.out && this.phase === 0) {
+            th.heat = Math.min(1.2, th.heat + CU.heatThrowHit);
+            th.heatObs = true;
+          }
+          // snap around toward the thrower — you have been NOTICED
+          const thp = th.pos();
+          m.minionMode = m.minionMode >= 2 ? m.minionMode : 1;
+          m.lingerT = Math.max(m.lingerT, 2.2);
+          m.scanYaw = Math.atan2(thp.x - mp.x, thp.z - mp.z);
+          break;
         }
       }
     }
@@ -1472,24 +1889,37 @@ export class Sim {
           const va = a.body.linvel();
           const vb = b.body.linvel();
           const closing = (va.x - vb.x) * nx + (va.z - vb.z) * nz;
-          if (closing > K.minClose) {
-            const jmag = Math.min(K.max, (closing - K.minClose) * K.perClose);
-            a.body.applyImpulse({ x: -nx * jmag, y: 0, z: -nz * jmag }, true);
-            b.body.applyImpulse({ x: nx * jmag, y: jmag * 0.12, z: nz * jmag }, true);
+          const minClose = a.isPlayer || b.isPlayer ? K.minClose : K.minCloseNpc;
+          if (closing > minClose) {
+            const jmag = Math.min(K.max, (closing - minClose) * K.perClose);
             // blame: whoever carried more speed into the contact threw it —
             // if the victim goes down in view of a minion, that's a strike
             const vaN = va.x * nx + va.z * nz;
             const vbN = -(vb.x * nx + vb.z * nz);
             const attacker = vaN >= vbN ? a : b;
             const victim = attacker === a ? b : a;
+            // asymmetric (John): the victim eats the full hit; a grounded
+            // attacker keeps their feet (staggers), an AIRBORNE one (the
+            // sprint-jump check) takes the full rebound and goes down too
+            const atkShare = this.isGrounded(attacker) ? K.attackerGroundShare : 1;
+            const vicDir = victim === b ? 1 : -1;
+            victim.body.applyImpulse(
+              { x: nx * jmag * vicDir, y: jmag * 0.12, z: nz * jmag * vicDir },
+              true,
+            );
+            attacker.body.applyImpulse(
+              { x: -nx * jmag * atkShare * vicDir, y: 0, z: -nz * jmag * atkShare * vicDir },
+              true,
+            );
             if (attacker.isPlayer && !attacker.out) {
               victim.checkedBy = attacker;
               victim.checkedAt = this.time;
             }
           }
         }
-        if (d > C.personalSpace) continue;
-        const f = (1 - d / C.personalSpace) * C.separationForce;
+        const space = !a.isPlayer && !b.isPlayer ? C.personalSpaceNpc : C.personalSpace;
+        if (d > space) continue;
+        const f = (1 - d / space) * C.separationForce;
         const fx = (dx / d) * f;
         const fz = (dz / d) * f;
         a.body.addForce({ x: -fx, y: 0, z: -fz }, true);
@@ -1519,11 +1949,15 @@ export class Sim {
     return this.items.map((it) => {
       const p = it.body.translation();
       const r = it.body.rotation();
+      // players hold as 'p<n>'; an NPC holder becomes 'n<index>' so the view
+      // can aim that NPC's arm and the steal targeting still works
+      const holder =
+        it.holderId ?? (it.holder ? `n${this.npcs.indexOf(it.holder)}` : null);
       return {
         kind: it.kind,
         pos: { x: p.x, y: p.y, z: p.z },
         rot: { x: r.x, y: r.y, z: r.z, w: r.w },
-        holder: it.holderId,
+        holder,
         doses: it.doses,
       };
     });
@@ -1539,7 +1973,23 @@ export class Sim {
       vel: { x: v.x, y: v.y, z: v.z },
       st: ch.state,
       gripPoint: this.gripAnchorWorld(ch),
-      act: ch.dosing ? 1 : ch.wantGrab && !ch.grip ? 3 : ch.staggerT > 0 ? 2 : 0,
+      act: ch.dosing
+        ? 1
+        : ch.knockAnimT > 0
+          ? 5
+          : ch.wantGrab && !ch.grip
+            ? 3
+            : ch.staggerT > 0
+              ? 2
+              : ch.dancingNow
+                ? 4
+                : 0,
+      asleep: ch.staminaDown,
+      // pissed off (angry-brows tell, John): a minion on the job, a walker
+      // barging the stall, or anyone mid-knock
+      angry: ch.isMinion
+        ? ch.minionMode >= 2
+        : ch.walkerMode === 5 || ch.knockAnimT > 0,
       k: ch.kFelt,
       stam: ch.isPlayer ? ch.stamina : 1,
       watch: ch.watchSignal,

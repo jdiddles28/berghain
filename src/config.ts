@@ -43,15 +43,34 @@ export const CONFIG = {
     queueDx: 0.75,
     queueSlots: 6,
     joinRadius: 0.9, // stand this close to the tail slot and you're IN line
-    npcUseTime: [9, 16] as const, // s an NPC spends in the stall
-    npcNeedEvery: [25, 60] as const, // s between a given walker needing to go
+    npcUseTime: [18, 22] as const, // s an NPC spends in the stall (~20, John's test value)
+    // GLOBAL arrival rate: one walker decides to go roughly every stall-visit
+    // (John's math: 20 s service + 20 s arrivals = a steady 3-4 person line
+    // that only balloons when players camp the stall — which is funny)
+    needEvery: [14, 26] as const,
+    // waypoints for getting in and out: the door gap is around the corner from
+    // the line, so straight-line seeking walked NPCs into the stall wall
+    doorMidX: -6.35, // center of the door gap on the innerZ wall
+    outsidePoint: { x: -6.35, z: 3.25 }, // in front of the door, outside
+    insidePoint: { x: -7.3, z: 5.1 }, // by the toilet
+    // STALL PRESSURE (John): no lock on the door, so camping is legal — but
+    // the front of the line escalates. Knock, knock LOUDER, barge in and drag
+    // you out for their turn, and eventually they fetch the Curator's muscle.
+    knockAt: 30, // s the front waiter waits before knocking
+    knock2At: 45, // the louder knock
+    bargeAt: 60, // front NPC forces the door and drags the occupant out
+    minionAt: 120, // still blocked → a minion comes to do it properly
+    minionEvery: 60, // each further minute, one more minion joins
+    dragOutPoint: { x: -4.9, z: 3.0 }, // where the occupant gets dumped
   },
 
   // THE NIGHT — the whole MVP loop. One bar (stamina), a clock, a way to
   // lose (ejected) and a way to win (closing time).
   night: {
     length: 720, // s of real time for the full Klubnacht (test compression)
-    hours: 32, // midnight Sat → 8am Mon
+    // midnight → noon (John): one full lap of the hour hand, easy to read.
+    // 12 in-game hours over 720 s = 12 real minutes, 1 minute per hour.
+    hours: 12,
     // stamina is a 0..1 bar. Drain RAMPS across the night: early you barely
     // need anything, by the end you're redosing constantly and riding the
     // k-hole edge — that escalation is the central conflict.
@@ -72,23 +91,51 @@ export const CONFIG = {
     minions: 3,
     viewRange: 6.5,
     viewHalfAngleDeg: 60,
+    // the minions are BIG (John: "big meaty germans" — clearly larger than
+    // even the clubgoers, same height as each other, not giants). The bulk is
+    // load-bearing: their motor strength is what wins the drag tug-of-war.
+    body: {
+      radius: 0.3,
+      halfHeight: 0.62,
+      mass: 100,
+      // kp beats this taller/heavier capsule's toppling leverage
+      // (m·g·halfHeight ≈ 608 N·m) by the same ~1.8× margin as everyone else
+      uprightKp: 1100,
+      uprightKd: 300,
+      maxTorque: 820,
+      moveSpeed: 1.1,
+      accelGain: 12,
+      maxAccel: 20,
+    },
     // heat: per-player suspicion 0..1. Only accumulates while a minion has
-    // eyes on you DOING something ejectable; slowly forgotten otherwise.
+    // eyes on you DOING something ejectable; slowly forgotten otherwise
+    // (John: suspicion rises AND falls gradually, never snaps back).
     heatDosing: 0.4, // per s observed mid-bump
     heatDown: 0.3, // per s observed collapsed/k-holed on the floor
     heatWrecked: 0.22, // per s observed moving at kFelt ≥ wreckedAt
     wreckedAt: 3.3,
     heatKnockdown: 0.55, // instantly, for flooring someone in view
+    heatGrabbed: 0.3, // per s you HOLD a minion — they do not like being dragged
+    heatThrowHit: 0.3, // instantly, for beaning a minion with a thrown object
+    heatBooth: 0.3, // per s observed ON the DJ stand — it is off limits
     heatDecay: 0.035, // per s unobserved
     ejectAt: 1.0,
     // the walk of shame: a minion hunts you, grips you, drags you to the
-    // exit. Friends can body-check the minion to tear the grip — a rescue.
+    // exit. Friends can body-check the minion to tear the grip — a rescue
+    // (everyone drops every grip when floored). TUG OF WAR (John): one
+    // minion out-pulls a walking player, a SPRINTING player barely out-pulls
+    // one minion (near standstill, and sprint burns the bar) — and any minion
+    // that SEES a colleague dragging someone comes to help. Two win.
     hunterSpeed: 2.4, // m/s — faster than your walk, slower than your sprint
     catchDist: 0.95,
-    dragSpeed: 1.5, // m/s hauling you to the door
+    dragSpeed: 1.6, // m/s target hauling you to the door
+    gripMaxForce: 3400, // a bouncer's grip transmits real force (grab.maxForce is 1600)
     ejectDist: 1.3, // this close to the exit with you in tow = you're out
+    losForget: 2.5, // s of fully broken line of sight before a hunter gives up
+    losCooldownHeat: 0.55, // heat falls to this when they lose you (no instant re-hunt)
     scanEvery: [4, 9] as const, // patrol: pause and sweep the room
     scanFor: [1.5, 3.5] as const,
+    hopVel: 3.9, // minions jump a little higher than players (stage is no refuge)
   },
 
   // Peak-style wobbly body: a DYNAMIC capsule held upright by a limited spring.
@@ -154,7 +201,17 @@ export const CONFIG = {
     // emergent — a sprint-JUMP check reliably floors the victim (and usually
     // the attacker, who is lighter), while walking-pace crowd contact
     // (closing < minClose) never triggers it.
-    kick: { minClose: 2.0, perClose: 120, max: 260 },
+    // ASYMMETRY (John): the kick used to be symmetric — every sprint contact
+    // floored both or neither. Now the victim takes the full impulse; a
+    // GROUNDED attacker takes a reduced share (staggers, usually stays up),
+    // an AIRBORNE attacker (sprint-jump) takes it all and goes down too.
+    // minClose 2.2: two NPCs ambling head-on close at ~1.9-2.1 — at 2.0 the
+    // 50-person crowd kept accidentally kicking itself over. Player sprint
+    // contact closes at 3+, so the body-check feel is untouched.
+    // minCloseNpc: NPC-NPC pairs need a higher bar — two clubbers ambling
+    // head-on close at ~2.0-2.4 and the 50-person crowd kept accidentally
+    // kicking itself over. Player-involved contact keeps the tuned 2.0.
+    kick: { minClose: 2.0, minCloseNpc: 2.7, perClose: 120, max: 260, attackerGroundShare: 0.45 },
     impulseWindow: 0.35, // s
     // stagger: real impacts cut the victim's motor control so knockback READS.
     // without this the movement controller cancels the hit within 3 frames.
@@ -248,11 +305,11 @@ export const CONFIG = {
   },
 
   crowd: {
-    // 22 dancers + 13 walkers + 3 minions + the DJ (always the LAST index).
+    // 30 dancers + 16 walkers + 3 minions + the DJ (always the LAST index).
     // role by index: [0,dancers) dance · [dancers,dancers+walkers) walk ·
-    // then minions · last is the DJ.
-    count: 39,
-    walkers: 13,
+    // then minions · last is the DJ. (John: more dancers, more walkers.)
+    count: 50,
+    walkers: 16,
     radius: 0.27,
     halfHeight: 0.55, // NPCs are TALLER than the player — you look up at the crowd
     mass: 82, // people are HEAVY — bodying through a human should cost you
@@ -272,16 +329,24 @@ export const CONFIG = {
     // the crowd splits: a pack DANCING mid-floor (genuinely hopping, whole
     // body, staying roughly in place near each other) and non-dancers
     // CIRCULATING the room — Berghain is a building full of people in motion.
-    dancers: 22, // NPC index < dancers ⇒ dancer; the rest are walkers
-    danceZone: { x: 0, z: -0.8, r: 2.2 }, // spawn seed + soft mid-floor bias
+    dancers: 30, // NPC index < dancers ⇒ dancer; the rest are walkers
+    // the floor forms right in FRONT of the DJ and spreads out (John) — and
+    // every dancer FACES the decks
+    danceZone: { x: 0, z: -1.8, r: 2.4 }, // spawn seed + soft bias, in front of the stage
+    danceZoneMinZ: -2.9, // the pack stays OFF the stage lip (they tripped on it)
     // dancers lump toward the live centroid of the pack, not a fixed spot
     // (John: "not necessarily 1 defined place, but they like to lump together").
-    packRadius: 1.7, // further than this from the mass → shuffle back in
+    // scaled up with the 30-dancer floor: the old 1.7 packed them so tight the
+    // contact solver spiked bodies over the knockdown threshold — the pack
+    // was flooring itself once a minute with nobody touching it
+    packRadius: 2.8, // further than this from the mass → shuffle back in
     bounceVel: 1.25, // vertical hop velocity on their beat — actually airborne
-    danceJitter: [6, 16] as const, // small horizontal shuffle N·s — stays in place
+    danceJitter: [4, 10] as const, // small horizontal shuffle N·s — stays in place
     danceEveryBeats: 2, // each dancer hits every N beats, staggered
     // walkers lap the room in streams — the "flow of people" you can get
     // swept up in (John). Not wandering: continuous circulation with pauses.
+    // The circuit is a U, not an O (John): nobody walks between the
+    // dancefloor and the DJ — walkers reaching the stage side turn back.
     flow: {
       margin: 1.8, // circuit distance in from the walls
       stepAng: 0.42, // rad the lap target advances once the current one is reached
@@ -290,11 +355,16 @@ export const CONFIG = {
       ccwShare: 0.7, // most of the room flows one way; the rest push upstream
       lingerEvery: [9, 24] as const, // s between stopping for a breather
       lingerFor: [2.5, 6] as const, // s standing still before rejoining the flow
+      // sin(loopAng) below this = the stage/dancefloor strip — bounce back
+      uTurnSin: -0.25,
     },
     // soft anti-stack nudge ONLY at near-overlap. weight comes from real
     // capsule-vs-capsule contact — a big invisible push field made people
     // glide away before you touched them, which read as weightless.
     personalSpace: 0.5,
+    // NPC pairs keep a little more room: 30 dancers landing hops on top of
+    // each other spiked the contact solver hard enough to floor people
+    personalSpaceNpc: 0.55,
     separationForce: 120,
   },
 

@@ -32,11 +32,13 @@ function run2(
   }
 }
 
-/** park the crowd in a grid by the stage so tests own the floor */
+/** park the crowd in a +x-side grid so tests own the floor. NOT by the stage:
+ *  at 50 NPCs that grid overlapped the booth and parked bodies punted the
+ *  K bag off the stand before pickup tests could aim at it */
 function parkCrowd(sim: Sim): void {
   sim.npcs.forEach((npc, i) => {
-    const x = -7 + (i % 12) * 1.25;
-    const z = -4.9 + Math.floor(i / 12) * 0.8;
+    const x = 1.4 + (i % 8) * 0.8;
+    const z = -1.4 + Math.floor(i / 8) * 0.75;
     npc.body.setTranslation({ x, y: 1.0, z }, true);
     npc.home = { x, z };
   });
@@ -130,6 +132,22 @@ describe('wobbly body physics', () => {
     run2(sim, 1, { ...charge, hop: true }, {});
     run2(sim, 70, charge, {});
     expect(sim.snapshot().players['p1'].st).toBe(1); // flattened
+  });
+
+  it('a grounded sprint check floors the victim but not the attacker', () => {
+    const sim = new Sim();
+    sim.addPlayer('p0');
+    sim.addPlayer('p1');
+    parkCrowd(sim);
+    const a = sim.players.get('p0')!;
+    const b = sim.players.get('p1')!;
+    a.body.setTranslation({ x: 0, y: 0.85, z: 2.6 }, true);
+    b.body.setTranslation({ x: 0, y: 0.85, z: 0 }, true);
+    run2(sim, 10, {}, {});
+    // full sprint straight into them — feet never leave the ground
+    run2(sim, 110, { moveZ: -1, sprint: true, faceYaw: Math.PI }, {});
+    expect(sim.snapshot().players['p1'].st).toBe(1); // victim flattened
+    expect(sim.snapshot().players['p0'].st).toBe(0); // attacker staggered, still up
   });
 
   it('everything in the booth that looks solid IS solid', () => {
@@ -282,7 +300,13 @@ describe('items — the bag of K', () => {
     b.body.setTranslation({ x: -0.5, y: 0.83, z: -1.9 }, true);
     b.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
     run2(sim, 25, { faceYaw: 0 }, { faceYaw: Math.PI });
-    run2(sim, 3, { faceYaw: 0 }, { grab: true, faceYaw: Math.PI, facePitch: -0.28 });
+    // pickups fire on the RMB edge and both bodies idle-sway, so a single
+    // one-frame press can catch the cone mid-wobble — press a few times,
+    // exactly like a player would
+    for (let tries = 0; tries < 5 && sim.snapshot().items[0].holder !== 'p1'; tries++) {
+      run2(sim, 3, { faceYaw: 0 }, { grab: true, faceYaw: Math.PI, facePitch: -0.28 });
+      run2(sim, 3, { faceYaw: 0 }, { faceYaw: Math.PI });
+    }
     expect(sim.snapshot().items[0].holder).toBe('p1');
     expect(sim.players.get('p0')!.holding).toBeNull();
   });

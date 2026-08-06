@@ -101,6 +101,9 @@ export class ClientSession implements Session {
         } else if (msg.t === 'full') {
           this.settled = true;
           this.state = 'room is full!';
+        } else if (msg.t === 'restart') {
+          // host reset the night — drop the stale end-state snapshots
+          this.buffer = [];
         } else if (msg.t === 'ev') {
           this.pendingEvents.push(...msg.evs);
         }
@@ -182,6 +185,7 @@ export class ClientSession implements Session {
         g: localInput.grab ? 1 : 0,
         u: localInput.use ? 1 : 0,
         d: localInput.drop ? 1 : 0,
+        dn: localInput.dance ? 1 : 0,
       } satisfies FastMsg);
       this.hopLatch = false;
     }

@@ -106,12 +106,46 @@ designs and playtests. Status: **pre-prototype — nothing has been built yet.**
 ## Controls (Build 1)
 
 WASD camera-relative move (body yaw-servos to face travel), mouse look (FP), Space hop.
-V toggles the voice-chat mic mute.
+V toggles the voice-chat mic mute. Hold E = dance: the same genuine beat-bounce the NPC
+dancers do (b14 — no gameplay purpose yet by design; it exists so hiding in the crowd reads).
 RMB = grab: items first (Peak-style look-highlight pickup, incl. snatching from hands),
 else the universal body/wall grip (soft spring, no joints). LMB = USE what's held (hold to
 bump from the K bag). Q = tap to drop, hold to charge a throw. No shove — John cut it (b10);
 sprint body checks are the violence now. John ruled grab stays on RMB ("left click seems so
 select focused, the action to grab should feel more intentional").
+
+## b14 systems (the current build)
+
+- **Kick asymmetry**: the check victim eats the full kick impulse; a GROUNDED attacker takes
+  `attackerGroundShare` (staggers, stays up), an airborne one (sprint-jump) takes it all and
+  goes down too. NPC-NPC pairs use `kick.minCloseNpc` (higher) — at 50 bodies the crowd kept
+  accidentally kicking itself over at the player threshold.
+- **Minions are BIG** (`curator.body`): heavier + stronger motor, and EXEMPT from the
+  grab holder penalties — that exemption is the drag tug-of-war (one minion out-pulls a
+  walking player; a sprinting player barely holds ground; any minion that SEES a colleague
+  dragging joins in). Minion grips cap at `gripMaxForce`, not grab.maxForce.
+- **Heat sources** beyond observation: holding a grip on a minion (`heatGrabbed`/s), flooring
+  one (instant grounds — no witness needed), beaning one with a thrown item (`heatThrowHit` +
+  they snap around toward the thrower), being seen on the DJ stand (`heatBooth` + a mode-3
+  "shoo": drag you to the floor, not the exit). Hunters FORGET a target after `losForget`
+  seconds of fully broken line of sight (heat falls to `losCooldownHeat`).
+- **Bathroom is a real system**: a global need scheduler (`bathroom.needEvery`) keeps a 3-4
+  person line; queue slots are tracked data; NPCs route via doorway waypoints (`routeTo` —
+  straight-line seeking walked them into the stall walls forever). STALL PRESSURE escalates
+  against campers: knock at 30 s, LOUD knock at 45 s, barge-and-drag at 60 s (walkerMode 5 —
+  for their turn, not an ejection), minions fetched from 120 s, one more per minute. Cutting
+  the line skips straight to the barge. Applies to NPC campers too — the club runs itself.
+- **Angry brows** (flags bit3): slanted eyebrows appear on anyone pissed off (minion on the
+  job, barger, knocker) — John's tell for WHO is mad at you. Minion head-redness scales with
+  the watched player's heat and burns solid during pursuit. Faces otherwise stay blank.
+- **Fetal sleep** (flags bit2): stamina collapse renders as a curled-up fetal ball, not a
+  ragdoll flop. Restart button on the end screen (host-only) rebuilds the Sim in place —
+  same lobby, same peers; `__game.sim` is a GETTER because restart swaps host.sim.
+- Crowd: 30 dancers (sunflower spawn — random spawns overlapped and seeded knockdown
+  avalanches) facing the DJ in front of the stage, 16 walkers on a U circuit that never
+  crosses the stage/dancefloor strip (`flow.uTurnSin`). Clock runs midnight → noon (12 min).
+- 3 K bags: DJ stand, behind the toilet, in dancer #4's hand (item holder 'n<idx>' on the
+  wire = 128+idx; players are <128; 255 loose).
 
 ## Items + ketamine (b10 scaffolding for Build 2)
 
