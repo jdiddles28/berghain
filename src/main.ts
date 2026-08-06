@@ -10,6 +10,7 @@ import type { Session } from './net/session';
 import { View } from './render/view';
 import { initRapier } from './sim/sim';
 import { installDebug } from './debug';
+import { VoiceChat } from './voice/voice';
 
 const app = document.getElementById('app')!;
 const hud = document.getElementById('hud')!;
@@ -45,6 +46,7 @@ async function start(mode: 'host' | 'join'): Promise<void> {
   session = mode === 'host' ? new HostSession() : new ClientSession(code);
   view = new View(app);
   input = new Input(view.renderer.domElement);
+  const voice = new VoiceChat(audio);
   menu.style.display = 'none';
 
   if (session instanceof HostSession) {
@@ -62,11 +64,16 @@ async function start(mode: 'host' | 'join'): Promise<void> {
     session.frame(dt, localInput);
     audio.handleEvents(session.drainEvents());
 
+    // proximity voice: starts once the room code + player id both exist
+    const roomCode = session instanceof HostSession ? session.roomCode : code;
+    voice.setIdentity(roomCode, session.localId);
+
     const frame = session.renderFrame();
     let itemLine = '';
     if (frame) {
       const meSnap = frame.players[session.localId];
       audio.update(frame.beat, meSnap?.k ?? 0, meSnap?.watch ?? 0);
+      if (meSnap) voice.update(dt, frame, input.camYaw, input.camPitch, session.localId);
       // THE bar + the night's endings
       if (meSnap) {
         stambox.style.display = 'block';
@@ -107,8 +114,10 @@ async function start(mode: 'host' | 'join'): Promise<void> {
       view.render(frame, input.camYaw, input.camPitch, session.localId, targeted);
     }
 
+    const voiceLine = voice.status();
     hud.textContent =
       session.status() +
+      (voiceLine ? `\n${voiceLine}` : '') +
       itemLine +
       (input.locked ? '' : '\nclick to grab the mouse · or hold a button + drag to look');
     requestAnimationFrame(loop);

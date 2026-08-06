@@ -309,6 +309,80 @@ export const CONFIG = {
     // dancefloor is LOUD — build 1 has one room, so one level
   },
 
+  // In-game proximity voice (b13). All processing happens on the RECEIVER —
+  // everyone streams their raw mic, and each listener spatializes + drug-warps
+  // every incoming voice from snapshot state. src/voice/ owns all of it.
+  voice: {
+    // distance falloff: full volume inside refDist, silent past maxDist
+    refDist: 1.4,
+    maxDist: 15,
+    rolloffPow: 1.5,
+
+    // the music FIELD: how loud the club is where you're standing. Drives
+    // both what you hear of the track and how drowned the voices are.
+    music: {
+      src: { x: 0, z: -4.0 }, // the speaker stack: front of the stage
+      loudRadius: 3.0, // this close to the stack it's max loud
+      falloff: 18, // m over which it drops toward minLevel
+      minLevel: 0.35, // even the far corner of the room is not quiet
+      stallClosed: 0.18, // stall with the door shut: thump-thump through the wall
+      stallOpen: 0.55,
+      stallLpClosed: 700, // Hz — the classic muffled-through-a-wall sound
+      stallLpOpen: 2600,
+      outsideLevel: 0.12, // (future map) past the exit
+      outsideLp: 420,
+    },
+
+    // the dancefloor is a comms dead zone: music level ducks voices to near
+    // nothing at the stack, and masks what little survives
+    duck: { start: 0.5, floor: 0.05, pow: 1.5, lpFull: 1100 },
+
+    // solid things between mouths and ears
+    occlusion: {
+      wallGain: 0.22,
+      wallLp: 850,
+      doorGain: 0.45, // a closed stall door blocks less than a wall
+      doorLp: 1400,
+      doorOpenAt: 1.1, // rad of swing at which the door stops blocking
+      outGain: 0.15, // through the building shell (future map)
+      outLp: 500,
+    },
+
+    // the metal box: voices FROM the stall ring tinny
+    tinny: { bp: 1700, q: 2.2, mix: 0.75, verb: 0.5 },
+
+    // synthesized impulse responses — the big dark room and the metal box
+    reverb: { clubSec: 1.5, clubBase: 0.12, clubDistExtra: 0.45, stallSec: 0.16 },
+
+    // how each substance comes out of your friend's mouth (receiver-side).
+    // Only K is real in the sim today; the rest are wired and waiting, and
+    // audible now via __voice.dose(...) for tuning.
+    fx: {
+      // mic blown wide open: you talk normally, everyone gets SHOUTED at —
+      // and it carries much further than a sober voice
+      coke: { boost: 6, post: 1.9, hp: 300, rangeMult: 1.8 },
+      // rhythmic warble/slur + muffle + slow WAVES of dropout: only some
+      // words get through and they all sound k-ed out
+      k: {
+        warbleHz: 3.3,
+        warbleDepth: 0.008, // s of delay swing at level 5 — the slur
+        lpAt5: 1500,
+        gate: { from: 1.6, rateHz: 0.16, minDuty: 0.35 },
+      },
+      // NOT chipmunk. The loved-up close-talker: warm, breathy, chorused,
+      // and it ignores distance — right in your ear from across the club
+      mdma: { shelfDb: 6, chorus: 0.55, verbExtra: 0.35, floor: 0.3 },
+      // motormouth: slight pitch-up + machine-gun slapback double-talk
+      mcat: { pitchSt: 0.75, slap: 0.5 },
+      // barely anything (John: your voice doesn't change much on G) — until
+      // the nod-off: a slow droop, dipping away mid-sentence
+      g: { pitchSt: -0.7, lp: 2100, dipMin: 0.5 },
+      // distinct from K: no dropouts, no rhythm — drunken SLIDING pitch
+      // (random walk), mushy consonants, too-loud-then-trailing-off swells
+      alcohol: { walkDepth: 0.011, lp: 3600, swell: 0.3, slap: 0.2 },
+    },
+  },
+
   camera: {
     // FIRST PERSON, head-stabilized like Peak: the eye FOLLOWS the body's
     // position but does not inherit its tilt jitter — you see the wobble on

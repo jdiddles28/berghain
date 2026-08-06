@@ -26,14 +26,16 @@ designs and playtests. Status: **pre-prototype — nothing has been built yet.**
   interactions (Lethal Company's terminal is the reference). The Build-2 stamina bar is John's
   own sanctioned HUD exception. Default diegetic; justify any overlay.
 - Build order is settled and strict: Build 1 (the physics toy) → Build 2 (the loop: K, stall
-  queue, Curator) → Build 3 (dancing, unresolved). Discord voice until Build 3.
+  queue, Curator) → Build 3 (dancing, unresolved). (In-game voice was pulled forward from the
+  original "Discord until Build 3" plan by John, 2026-08-06 — it shipped as b13.)
 
 ## Hard platform requirements
 
 - Browser game, one URL, no install, runs on integrated graphics.
 - Exactly 3 players, co-op.
-- Proximity voice chat as the core system eventually (music-volume attenuation per room);
-  Discord stands in for Builds 1–2.
+- Proximity voice chat as the core system — SHIPPED (b13, John's call 2026-08-06, overriding
+  the handoff's "Discord until Build 3"): src/voice/, music-attenuation + stall acoustics +
+  per-drug voice FX. See the src/voice/ section below.
 
 ## Commands
 
@@ -51,7 +53,20 @@ designs and playtests. Status: **pre-prototype — nothing has been built yet.**
   behind. Snapshots are QUANTIZED BINARY ArrayBuffers (protocol.ts — BinaryPack sends JS
   numbers as 8 bytes each; the old object snapshots were ~90 KB/s, brutal through a TURN
   relay). Client input is throttled to 30 Hz with hop latched across the throttle; clients
-  ping every 2 s and show RTT in the HUD. Voice = Discord (in-game proximity voice Build 3+).
+  ping every 2 s and show RTT in the HUD.
+- `src/voice/` — in-game proximity voice (b13). Fully separate from the game wire: each player
+  opens a SECOND PeerJS peer with a deterministic id (room code + player number) and the mesh
+  reads who's in the room straight off the snapshot — no roster messages, no protocol coupling.
+  Everyone streams their RAW mic; each RECEIVER spatializes + drug-warps every incoming voice
+  (acoustics.ts = pure headless-tested math: music field/duck/occlusion/tinny · fx.ts = the
+  per-drug Web Audio chains · voice.ts = mesh + per-speaker pipelines). Music also reacts to
+  position via ClubAudio.setSpace (stall = thump through the wall). Drug voice designs: coke =
+  blown-open mic that CARRIES; K = warble + waves of word-dropout; alcohol = sliding random-walk
+  pitch + swells (distinct from K: no rhythm, no dropouts); MDMA = close-talker warmth that
+  ignores distance (NOT chipmunk); 4-MMC = pitch-up + slapback double-talk; G = near-nothing +
+  nod-off dips. Only K is fed by the sim today; the rest wait on Build 2+ drug states and are
+  audible NOW via `__voice.dose('p1','coke',1)` / `__voice.loopback()` (solo mic test). Tuning
+  lives in CONFIG.voice. V = mute.
 - `src/config.ts` — ALL tuning constants. The physics FEEL lives in `body`/`balance`/`shove`/`grab`.
 - `src/audio.ts` — synthesized 128 BPM techno + SFX, Web Audio, no sound files. Phase-locked to
   the rendered sim beat so the crowd bounces on the kick you hear.
@@ -91,6 +106,7 @@ designs and playtests. Status: **pre-prototype — nothing has been built yet.**
 ## Controls (Build 1)
 
 WASD camera-relative move (body yaw-servos to face travel), mouse look (FP), Space hop.
+V toggles the voice-chat mic mute.
 RMB = grab: items first (Peak-style look-highlight pickup, incl. snatching from hands),
 else the universal body/wall grip (soft spring, no joints). LMB = USE what's held (hold to
 bump from the K bag). Q = tap to drop, hold to charge a throw. No shove — John cut it (b10);

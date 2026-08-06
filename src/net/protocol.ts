@@ -1,7 +1,9 @@
 // Wire protocol. Two PeerJS DataConnections per client:
 //  - label "ctl"  (reliable/ordered): handshake + game events
 //  - label "fast" (unreliable): input + snapshot streams, latest-wins
-// Voice is Discord for Build 1 (per the handoff) — no voice channel here.
+// Voice does NOT ride these connections: src/voice/ opens its own PeerJS
+// peers (ids derived from the room code + player number) and streams media
+// peer-to-peer — zero coupling to this wire format.
 
 import type { BodySnap, GameEvent, ItemSnap, SimSnapshot } from '../sim/types';
 
@@ -20,7 +22,9 @@ export const INTERP_DELAY_SNAPS = 2.5;
 // b11: committed bump animation, right-hand carry, outline highlight, the
 // 5-minute arrangement + K audio (freshness gate — no wire change).
 // b12: THE NIGHT — stamina/watch/out per body, clock+phase+door in the header.
-export const PROTOCOL_VERSION = 12;
+// b13: in-game proximity voice (freshness gate — no wire change, but a stale
+// tab would silently have no voice peer and "Alex can't hear us").
+export const PROTOCOL_VERSION = 13;
 
 // ICE: STUN discovers a direct path between machines; TURN *relays* traffic
 // when hard NATs (phone-hotspot carrier CGNAT, strict office wifi) refuse

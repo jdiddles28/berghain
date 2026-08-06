@@ -18,6 +18,10 @@ export class ClubAudio {
   private master!: GainNode;
   private comp!: DynamicsCompressorNode;
   private kFilter!: BiquadFilterNode;
+  // where-you-stand acoustics, driven by src/voice/: quieter far from the
+  // stack, a muffled thump through the stall wall
+  private spaceGain!: GainNode;
+  private spaceFilter!: BiquadFilterNode;
   private wet!: GainNode;
   private delay!: DelayNode;
   private nextBeatToSchedule = 0; // integer beat index
@@ -41,9 +45,15 @@ export class ClubAudio {
     this.kFilter.type = 'lowpass';
     this.kFilter.frequency.value = 18000;
     this.kFilter.connect(this.comp);
+    // master → space (position in the club) → kFilter (K in your head) → comp
+    this.spaceFilter = this.ctx.createBiquadFilter();
+    this.spaceFilter.type = 'lowpass';
+    this.spaceFilter.frequency.value = 20000;
+    this.spaceGain = this.ctx.createGain();
+    this.spaceFilter.connect(this.spaceGain).connect(this.kFilter);
     this.master = this.ctx.createGain();
     this.master.gain.value = CONFIG.music.master;
-    this.master.connect(this.kFilter);
+    this.master.connect(this.spaceFilter);
     // the K echo: a warbling feedback delay fed from the whole mix. dry when
     // sober; high, it smears everything you hear into things you didn't.
     this.wet = this.ctx.createGain();
@@ -78,6 +88,22 @@ export class ClubAudio {
     par.connect(this.parGain);
     this.parGain.connect(this.kFilter);
     par.start();
+  }
+
+  /** The shared AudioContext — the voice module builds its graph on it. */
+  get context(): AudioContext | null {
+    return this.ctx;
+  }
+
+  /** How the club sounds from where the player is standing: level 0..1 and a
+   *  lowpass ceiling. src/voice/acoustics.ts computes it; called every frame.
+   *  (The K echo + hallucinations bypass this on purpose — they're in your
+   *  head, and the stall wall can't muffle those.) */
+  setSpace(level: number, lowpassHz: number): void {
+    if (!this.ctx) return;
+    const now = this.ctx.currentTime;
+    this.spaceGain.gain.setTargetAtTime(level, now, 0.25);
+    this.spaceFilter.frequency.setTargetAtTime(lowpassHz, now, 0.25);
   }
 
   /** Call every render frame with the interpolated sim beat, the local
