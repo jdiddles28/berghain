@@ -62,7 +62,7 @@ async function start(mode: 'host' | 'join'): Promise<void> {
     const frame = session.renderFrame();
     let itemLine = '';
     if (frame) {
-      audio.update(frame.beat);
+      audio.update(frame.beat, frame.players[session.localId]?.k ?? 0);
       // Peak-style pickup flow: what you're looking at highlights, the HUD
       // says what RMB would do, and holding shows the bag's state
       let targeted = -1;
@@ -78,7 +78,7 @@ async function start(mode: 'host' | 'join'): Promise<void> {
           !!holding,
         );
         if (holding) {
-          itemLine = `\nbag of K · ${holding.doses}/${CONFIG.ketamine.dosesPerBag} bumps · hold LMB: bump · Q: drop (hold: throw)`;
+          itemLine = `\nbag of K · ${holding.doses}/${CONFIG.ketamine.dosesPerBag} bumps · LMB: do a bump · Q: drop (hold: throw)`;
         } else if (targeted >= 0) {
           itemLine = frame.items[targeted].holder
             ? '\nright click: snatch the bag'

@@ -21,6 +21,10 @@ designs and playtests. Status: **pre-prototype — nothing has been built yet.**
   hangout, extraction-as-frame) stay rejected; don't re-propose them.
 - Dancing is the big unsolved design problem. Do not build Build 3 or paper over this.
 - Hard constraint on any proposal: **Peak has one bar.** Every new meter must earn its place.
+- **DIEGETIC UI (John's requirement, 2026-08-06):** UI should as much as possible be real objects
+  in the world — rules on a holdable flyer, the phone as a physical item, minigames as physical
+  interactions (Lethal Company's terminal is the reference). The Build-2 stamina bar is John's
+  own sanctioned HUD exception. Default diegetic; justify any overlay.
 - Build order is settled and strict: Build 1 (the physics toy) → Build 2 (the loop: K, stall
   queue, Curator) → Build 3 (dancing, unresolved). Discord voice until Build 3.
 

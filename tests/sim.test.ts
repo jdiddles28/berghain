@@ -297,8 +297,13 @@ describe('ketamine', () => {
       pickUpBag(sim);
       const ch = sim.players.get('p0')!;
       const K = CONFIG.ketamine;
-      // hold LMB long enough for 5 bumps back to back
-      run(sim, Math.ceil(60 * (K.doseHoldTime * 5 + 0.3)), { use: true, faceYaw: Math.PI });
+      // 5 bumps = 5 separate presses. Each press is a committed animation and
+      // OVER-holding past the end must not retrigger (John's ruling) — every
+      // cycle below over-holds by a full second and still burns exactly 1.
+      for (let i = 0; i < 5; i++) {
+        run(sim, Math.ceil(60 * (K.doseAnimTime + 1.0)), { use: true, faceYaw: Math.PI });
+        run(sim, 6, { faceYaw: Math.PI }); // release before the next press
+      }
       expect(sim.snapshot().items[0].doses).toBe(K.dosesPerBag - 5);
       expect(ch.kLevel).toBe(0); // nothing has HIT yet — onset delay
       // onset: all five arrive → level 5 → k-hole (down, and STAYS down)

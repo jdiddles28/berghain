@@ -67,7 +67,8 @@ export class Character {
   prevGrab = false; // pickup fires on the RMB edge, not every held frame
   prevDrop = false;
   dropT = 0; // how long Q has been held — tap drops, a hold charges a throw
-  useT = 0; // how long LMB has been held on the bag — one bump per doseHoldTime
+  useT = 0; // progress through the committed bump animation
+  prevUse = false; // bumps fire on the LMB EDGE — holding does nothing
   dosing = false;
   // ketamine (players only)
   kLevel = 0; // true level 0..5
@@ -507,20 +508,40 @@ export class Sim {
     }
     ch.prevDrop = input.drop;
 
-    // hold LMB with the bag: one bump per doseHoldTime
-    ch.dosing =
-      !!ch.holding && ch.holding.kind === 0 && ch.holding.doses > 0 && input.use && ch.state === 0;
-    if (ch.dosing) {
-      ch.useT += dt;
-      if (ch.useT >= CONFIG.ketamine.doseHoldTime) {
-        ch.useT = 0;
-        ch.holding!.doses--;
-        ch.kPending.push(this.time + CONFIG.ketamine.onsetDelay);
-        this.emit({ t: 'dose', ...vec(ch.pos()) });
-      }
-    } else {
+    // a bump is a COMMITTED one-shot (John): the LMB edge starts the set
+    // animation — bag up, sniff mid-way, bag back down, dose applies at the
+    // end. Holding longer does nothing; release and press again for another.
+    const KT = CONFIG.ketamine;
+    const useEdge = input.use && !ch.prevUse;
+    if (
+      !ch.dosing &&
+      useEdge &&
+      ch.holding &&
+      ch.holding.kind === 0 &&
+      ch.holding.doses > 0 &&
+      ch.state === 0
+    ) {
+      ch.dosing = true;
       ch.useT = 0;
     }
+    if (ch.dosing) {
+      if (!ch.holding || ch.state !== 0) {
+        ch.dosing = false; // floored, or the bag got snatched mid-bump: no dose
+        ch.useT = 0;
+      } else {
+        const prev = ch.useT;
+        ch.useT += dt;
+        const sniffT = KT.doseAnimTime * KT.doseSniffAt;
+        if (prev < sniffT && ch.useT >= sniffT) this.emit({ t: 'dose', ...vec(ch.pos()) });
+        if (ch.useT >= KT.doseAnimTime) {
+          ch.dosing = false;
+          ch.useT = 0;
+          ch.holding.doses--;
+          ch.kPending.push(this.time + KT.onsetDelay);
+        }
+      }
+    }
+    ch.prevUse = input.use;
   }
 
   /** level bookkeeping: bumps hit on a delay, levels decay on a timer, the
@@ -728,10 +749,20 @@ export class Sim {
     it.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
   }
 
-  /** where a held item sits: out in front of the chest, or up at the face
-   *  mid-bump */
+  /** where a held item sits: out in front of the chest, travelling smoothly
+   *  up to the face and back down over the bump animation */
   private handWorld(ch: Character): { x: number; y: number; z: number } {
-    const local = ch.dosing ? CONFIG.items.doseLocal : CONFIG.items.holdLocal;
+    const I = CONFIG.items;
+    let f = 0; // 0 = carry position, 1 = at the face
+    if (ch.dosing) {
+      const KT = CONFIG.ketamine;
+      f = Math.min(1, ch.useT / KT.doseRaiseTime, Math.max(0, (KT.doseAnimTime - ch.useT) / KT.doseRaiseTime));
+    }
+    const local = {
+      x: I.holdLocal.x + (I.doseLocal.x - I.holdLocal.x) * f,
+      y: I.holdLocal.y + (I.doseLocal.y - I.holdLocal.y) * f,
+      z: I.holdLocal.z + (I.doseLocal.z - I.holdLocal.z) * f,
+    };
     const p = ch.pos();
     const o = rotateVec(ch.body.rotation(), local);
     return { x: p.x + o.x, y: p.y + o.y, z: p.z + o.z };

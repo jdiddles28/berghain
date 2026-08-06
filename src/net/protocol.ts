@@ -17,7 +17,9 @@ export const INTERP_DELAY_SNAPS = 2.5;
 // the pointer-lock fallback; b5: walker lean + own-body clipping) — the
 // handshake doubles as a build-freshness gate.
 // b10: shove removed, items + K, BINARY snapshots (see encodeSnapshot).
-export const PROTOCOL_VERSION = 10;
+// b11: committed bump animation, right-hand carry, outline highlight, the
+// 5-minute arrangement + K audio (freshness gate — no wire change).
+export const PROTOCOL_VERSION = 11;
 
 // ICE: STUN discovers a direct path between machines; TURN *relays* traffic
 // when hard NATs (phone-hotspot carrier CGNAT, strict office wifi) refuse

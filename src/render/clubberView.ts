@@ -139,11 +139,14 @@ export class ClubberView {
     const speed = Math.hypot(b.vel.x, b.vel.z);
     this.walkPhase += speed * dt * 5.2;
 
-    // dosing: the bag comes up to the face — near arm up, head-adjacent
+    // dosing: the bag comes up to the face — the carrying arm tracks it.
+    // NOTE on handedness: the arm at -x ("armL" here) RENDERS as the
+    // character's right hand (+x draws screen-left in FP) — and John wants
+    // items carried in the right hand, so the -x arm does the carrying.
     if (b.act === 1 && b.st !== 1) {
-      if (opts?.holdTarget) this.aimArm(this.armR, opts.holdTarget);
-      else this.armR.rotation.set(-2.5, 0, -0.3);
-      this.armL.rotation.set(-0.2, 0, 0.15);
+      if (opts?.holdTarget) this.aimArm(this.armL, opts.holdTarget);
+      else this.armL.rotation.set(-2.5, 0, 0.3);
+      this.armR.rotation.set(-0.2, 0, -0.15);
       this.legsWalk(speed);
       return;
     }
@@ -156,14 +159,15 @@ export class ClubberView {
       return;
     }
 
-    // carrying something: the right arm holds it out, the left stays natural
+    // carrying something: the RIGHT hand (-x arm, see note above) holds it
+    // out; the other arm stays natural
     if (opts?.holdTarget && b.st !== 1) {
-      this.aimArm(this.armR, opts.holdTarget);
+      this.aimArm(this.armL, opts.holdTarget);
       if (speed > 0.4) {
         const s = Math.sin(this.walkPhase);
-        this.armL.rotation.set(s * 0.5, 0, 0.12);
+        this.armR.rotation.set(s * 0.5, 0, -0.12);
       } else {
-        this.armL.rotation.set(0, 0, 0.08);
+        this.armR.rotation.set(0, 0, -0.08);
       }
       this.legsWalk(speed);
       return;

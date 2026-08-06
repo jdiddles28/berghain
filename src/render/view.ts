@@ -14,7 +14,12 @@ export class View {
 
   private players = new Map<string, ClubberView>();
   private npcs: ClubberView[] = [];
-  private itemViews: { group: THREE.Group; mats: THREE.MeshLambertMaterial[] }[] = [];
+  private itemViews: {
+    group: THREE.Group;
+    mats: THREE.MeshLambertMaterial[];
+    outline: THREE.Mesh;
+    outlineMat: THREE.MeshBasicMaterial;
+  }[] = [];
   private beams: { light: THREE.PointLight; baseColor: THREE.Color; phase: number }[] = [];
   private strobe: THREE.PointLight;
   private lastTime = 0;
@@ -160,9 +165,21 @@ export class View {
       const bag = new THREE.Mesh(new THREE.BoxGeometry(0.11, 0.05, 0.14), bagMat);
       const zip = new THREE.Mesh(new THREE.BoxGeometry(0.112, 0.014, 0.028), zipMat);
       zip.position.set(0, 0.02, -0.06);
-      group.add(bag, zip);
+      // pickup highlight: an inflated backface shell — reads as a clean
+      // colored outline around the object at any angle in the dark (John:
+      // the emissive-only glow didn't read at all)
+      const outlineMat = new THREE.MeshBasicMaterial({
+        color: 0xffd54a,
+        side: THREE.BackSide,
+        transparent: true,
+        opacity: 0.95,
+      });
+      const outline = new THREE.Mesh(new THREE.BoxGeometry(0.11, 0.05, 0.14), outlineMat);
+      outline.scale.setScalar(1.45);
+      outline.visible = false;
+      group.add(bag, zip, outline);
       this.scene.add(group);
-      this.itemViews.push({ group, mats: [bagMat, zipMat] });
+      this.itemViews.push({ group, mats: [bagMat, zipMat], outline, outlineMat });
     }
   }
 
@@ -204,9 +221,12 @@ export class View {
       iv.group.position.set(it.pos.x, it.pos.y, it.pos.z);
       iv.group.quaternion.set(it.rot.x, it.rot.y, it.rot.z, it.rot.w);
       if (it.holder) heldBy.set(it.holder, iv.group.position);
-      // Peak-style pickup highlight: the thing RMB would take glows
-      const glow = i === targetedItem ? 0.35 + 0.25 * Math.sin(frame.time * 7) : 0;
-      for (const m of iv.mats) m.emissive.setRGB(glow, glow, glow * 0.7);
+      // Peak-style pickup highlight: outline shell + a little inner glow
+      const on = i === targetedItem;
+      iv.outline.visible = on;
+      if (on) iv.outlineMat.opacity = 0.75 + 0.25 * Math.sin(frame.time * 6);
+      const glow = on ? 0.3 : 0;
+      for (const m of iv.mats) m.emissive.setRGB(glow, glow, glow * 0.6);
     }
 
     // players

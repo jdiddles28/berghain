@@ -138,9 +138,11 @@ export const CONFIG = {
     pickupCos: 0.95, // how tight the look-cone is (~18°)
     stealRange: 1.6, // grabbing something out of another player's hand
     // held out in front AND high enough to sit in the bottom of the FP frame —
-    // you should SEE what you're carrying (Peak carry)
-    holdLocal: { x: 0.18, y: 0.26, z: 0.46 },
-    doseLocal: { x: 0.06, y: 0.44, z: 0.26 }, // the bag comes up to the face mid-bump
+    // you should SEE what you're carrying (Peak carry). NOTE x is NEGATIVE:
+    // -x is the character's RIGHT hand as rendered (verified in FP — +x draws
+    // on the left of the frame), and John wants items in the right hand.
+    holdLocal: { x: -0.18, y: 0.26, z: 0.46 },
+    doseLocal: { x: -0.06, y: 0.44, z: 0.26 }, // the bag comes up to the face mid-bump
     dropSpeed: 1.1, // tap Q: just let it go
     throwChargeMin: 0.28, // held shorter than this = a drop, not a throw
     throwChargeMax: 1.0, // full windup
@@ -153,7 +155,12 @@ export const CONFIG = {
   // a delay, stack per level, and ease in/out — no hard steps.
   ketamine: {
     dosesPerBag: 20,
-    doseHoldTime: 1.1, // hold LMB with the bag this long = one bump
+    // a bump is a SET animation (John): press LMB → the bag comes up, you
+    // sniff, it comes back down. One bump per press — holding does nothing;
+    // release and press again for another.
+    doseAnimTime: 2.6, // s, committed once started
+    doseSniffAt: 0.55, // fraction through the animation when the sniff lands
+    doseRaiseTime: 0.7, // s for the bag to travel hand→face (and face→hand)
     onsetDelay: 30, // s from the bump to the level actually hitting
     decayEvery: 60, // s per level coming back down (TEST value — real game much longer)
     maxLevel: 5, // hitting 5 = k-hole: full ragdoll until you decay back to 4
