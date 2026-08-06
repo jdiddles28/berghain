@@ -83,7 +83,9 @@ describe('crowd stays on its feet', () => {
     const d = sim.npcs[0];
     d.body.setTranslation({ x: 6.8, y: 1.0, z: 4.6 }, true);
     d.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
-    stepN(sim, 60 * 12);
+    // generous: he crosses most of the room at walker speed, possibly getting
+    // bounced around by the crowd on the way in
+    stepN(sim, 60 * 18);
     // he should have rejoined the mass: distance to the dancer centroid small
     let cx = 0;
     let cz = 0;

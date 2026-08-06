@@ -16,19 +16,27 @@ export const INTERP_DELAY_SNAPS = 2.5;
 // Also fine to bump when a fix simply MUST reach everyone (b4: crowd balance +
 // the pointer-lock fallback; b5: walker lean + own-body clipping) — the
 // handshake doubles as a build-freshness gate.
-export const PROTOCOL_VERSION = 8;
+export const PROTOCOL_VERSION = 9;
 
 // ICE: STUN discovers a direct path between machines; TURN *relays* traffic
 // when hard NATs (phone-hotspot carrier CGNAT, strict office wifi) refuse
 // direct paths — that failure looks like "host sees you join, you sit at
 // connecting forever".
 //
-// Every free no-account TURN relay is DEAD (probed live 2026-08-05: openrelay,
-// staticauth.openrelay, expressturn — zero relay candidates from all of them;
-// they all require accounts now). When John creates the free metered.ca
-// Open Relay account (20 GB/mo), paste its credentials into TURN below and
-// hotspot/strict-NAT pairs will connect through the relay.
-const TURN: RTCIceServer | null = null; // ← {urls: [...], username, credential}
+// John's free metered.ca Open Relay account (20 GB relay traffic/mo).
+// Verified live 2026-08-06: standard.relay.metered.ca mints relay candidates
+// with these credentials. Port 80/443 + tcp/turns variants punch through
+// restrictive firewalls; hotspot CGNAT pairs connect through the relay.
+const TURN: RTCIceServer | null = {
+  urls: [
+    'turn:standard.relay.metered.ca:80',
+    'turn:standard.relay.metered.ca:80?transport=tcp',
+    'turn:standard.relay.metered.ca:443',
+    'turns:standard.relay.metered.ca:443?transport=tcp',
+  ],
+  username: '87abdb26f94804b99f8686bb',
+  credential: 'cyCNyyZv3mFhn4fh',
+};
 
 /** testing hatch: paste relay credentials into localStorage key "bhn-turn"
  *  (same JSON shape) to try a relay on the DEPLOYED game without a redeploy */
