@@ -55,6 +55,12 @@ export interface BodySnap {
   act: 0 | 1 | 2 | 3;
   /** FELT ketamine level 0..5 (players only; 0 for NPCs) — drives effects */
   k: number;
+  /** stamina 0..1 (players; 1 for NPCs) — THE bar */
+  stam: number;
+  /** how hard the Curator's minions are watching this body right now, 0..1 */
+  watch: number;
+  /** ejected from the club — out of the game */
+  out: boolean;
 }
 
 export type ItemKind = 0; // 0 = bag of K (more later)
@@ -72,6 +78,12 @@ export interface ItemSnap {
 export interface SimSnapshot {
   time: number;
   beat: number; // continuous beat counter (time * bpm / 60) — drives lights + audio phase
+  /** seconds into the compressed Klubnacht */
+  nightT: number;
+  /** 0 = the night is on · 1 = closing time (survivors win) */
+  phase: 0 | 1;
+  /** stall door swing angle, radians (0 = closed) */
+  doorAngle: number;
   players: Record<string, BodySnap>;
   npcs: BodySnap[];
   items: ItemSnap[];
@@ -84,11 +96,15 @@ export type GameEvent =
   | { t: 'grab'; x: number; y: number; z: number; on: boolean }
   | { t: 'pickup'; x: number; y: number; z: number } // item into a hand (incl. steals)
   | { t: 'throw'; x: number; y: number; z: number }
-  | { t: 'dose'; x: number; y: number; z: number }; // sniff
+  | { t: 'dose'; x: number; y: number; z: number } // sniff
+  | { t: 'eject'; x: number; y: number; z: number }; // someone got walked out
 
 export interface RenderFrame {
   time: number;
   beat: number;
+  nightT: number;
+  phase: 0 | 1;
+  doorAngle: number;
   players: Record<string, BodySnap>;
   npcs: BodySnap[];
   items: ItemSnap[];
@@ -150,6 +166,9 @@ export function lerpSnapshot(a: SimSnapshot, b: SimSnapshot, t: number): RenderF
   return {
     time: a.time + (b.time - a.time) * t,
     beat: a.beat + (b.beat - a.beat) * t,
+    nightT: a.nightT + (b.nightT - a.nightT) * t,
+    phase: b.phase,
+    doorAngle: a.doorAngle + (b.doorAngle - a.doorAngle) * t,
     players,
     npcs,
     items,
@@ -165,6 +184,9 @@ function lerpBody(a: BodySnap, b: BodySnap, t: number): BodySnap {
     gripPoint: a.gripPoint && b.gripPoint ? lerpV(a.gripPoint, b.gripPoint, t) : b.gripPoint,
     act: b.act,
     k: a.k + (b.k - a.k) * t,
+    stam: a.stam + (b.stam - a.stam) * t,
+    watch: a.watch + (b.watch - a.watch) * t,
+    out: b.out,
   };
 }
 

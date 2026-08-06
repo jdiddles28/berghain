@@ -14,6 +14,9 @@ function body(n: number, grip: boolean): BodySnap {
     st: (n % 3) as BodySnap['st'],
     act: ((n + 1) % 4) as BodySnap['act'],
     k: n === 0 ? 3.7 : 0,
+    stam: n === 0 ? 0.42 : 1,
+    watch: n === 2 ? 0.8 : 0,
+    out: n === 2,
     gripPoint: grip ? { x: 1.111, y: 2.222, z: -3.333 } : null,
   };
 }
@@ -23,6 +26,9 @@ describe('binary snapshot codec', () => {
     const snap: SimSnapshot = {
       time: 123.456,
       beat: 0,
+      nightT: 456.78,
+      phase: 1,
+      doorAngle: -1.234,
       players: { p0: body(0, true), p2: body(2, false) },
       npcs: [body(1, false), body(3, true), body(4, false)],
       items: [
@@ -58,9 +64,16 @@ describe('binary snapshot codec', () => {
     expect(p0.st).toBe(0);
     expect(p0.act).toBe(1);
     expect(p0.k).toBeCloseTo(3.7, 1);
+    expect(p0.stam).toBeCloseTo(0.42, 2);
+    expect(p0.out).toBe(false);
     expect(p0.gripPoint!.y).toBeCloseTo(2.222, 2);
     expect(out.players['p2'].gripPoint).toBeNull();
     expect(out.players['p2'].k).toBe(0);
+    expect(out.players['p2'].watch).toBeCloseTo(0.8, 2);
+    expect(out.players['p2'].out).toBe(true);
+    expect(out.nightT).toBeCloseTo(456.78, 1);
+    expect(out.phase).toBe(1);
+    expect(out.doorAngle).toBeCloseTo(-1.234, 2);
 
     expect(out.npcs[1].gripPoint!.z).toBeCloseTo(-3.333, 2);
     expect(out.items[0].holder).toBe('p2');

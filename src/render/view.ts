@@ -24,6 +24,9 @@ export class View {
   private strobe: THREE.PointLight;
   private lastTime = 0;
   private lastFilter = '';
+  private doorPivot!: THREE.Group;
+  private clockHour!: THREE.Mesh;
+  private clockMin!: THREE.Mesh;
 
   constructor(container: HTMLElement) {
     this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'low-power' });
@@ -140,6 +143,68 @@ export class View {
     );
     top.position.set(dj.x, s.h + dj.boardH + 0.025, dj.boardZ);
     this.scene.add(top);
+    // bathroom stall in the -x/+z corner + its swinging door
+    const B = CONFIG.bathroom;
+    const stallMat = new THREE.MeshLambertMaterial({ color: 0x1c191f, flatShading: true });
+    const wallLen = B.doorHingeX - -R.w / 2;
+    const stallA = new THREE.Mesh(new THREE.BoxGeometry(wallLen, 2.3, 0.12), stallMat);
+    stallA.position.set(-R.w / 2 + wallLen / 2, 1.15, B.innerZ);
+    const stallB = new THREE.Mesh(
+      new THREE.BoxGeometry(0.12, 2.3, R.d / 2 - B.innerZ),
+      stallMat,
+    );
+    stallB.position.set(B.innerX, 1.15, B.innerZ + (R.d / 2 - B.innerZ) / 2);
+    this.scene.add(stallA, stallB);
+    const toilet = new THREE.Mesh(
+      new THREE.BoxGeometry(0.44, 0.5, 0.44),
+      new THREE.MeshLambertMaterial({ color: 0x9fa3ad, flatShading: true }),
+    );
+    toilet.position.set(-7.4, 0.25, 5.45);
+    this.scene.add(toilet);
+    this.doorPivot = new THREE.Group();
+    this.doorPivot.position.set(B.doorHingeX, 0, B.innerZ);
+    const doorPanel = new THREE.Mesh(
+      new THREE.BoxGeometry(B.doorW, B.doorH, 0.06),
+      new THREE.MeshLambertMaterial({ color: 0x2b2530, flatShading: true }),
+    );
+    doorPanel.position.set(B.doorW / 2, B.doorH / 2, 0);
+    this.doorPivot.add(doorPanel);
+    this.scene.add(this.doorPivot);
+
+    // the exit on the +z wall — a black doorway the minions haul people to —
+    // and the wall clock above it: the only clock in the building
+    const E = CONFIG.room.exit;
+    const exitHole = new THREE.Mesh(
+      new THREE.BoxGeometry(E.w, 2.5, 0.18),
+      new THREE.MeshBasicMaterial({ color: 0x000000 }),
+    );
+    exitHole.position.set(E.x, 1.25, R.d / 2 - 0.1);
+    this.scene.add(exitHole);
+    const exitLip = new THREE.Mesh(
+      new THREE.BoxGeometry(E.w + 0.3, 0.12, 0.24),
+      new THREE.MeshBasicMaterial({ color: 0x8f2222 }),
+    );
+    exitLip.position.set(E.x, 2.56, R.d / 2 - 0.1);
+    this.scene.add(exitLip);
+    const clockFace = new THREE.Mesh(
+      new THREE.CircleGeometry(0.4, 24),
+      new THREE.MeshLambertMaterial({ color: 0xd9dae2, flatShading: true }),
+    );
+    clockFace.position.set(E.x, 3.3, R.d / 2 - 0.16);
+    clockFace.rotation.y = Math.PI;
+    this.scene.add(clockFace);
+    const handMat = new THREE.MeshBasicMaterial({ color: 0x14141a });
+    this.clockHour = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.2, 0.02), handMat);
+    this.clockMin = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.32, 0.02), handMat);
+    for (const [hand, len] of [
+      [this.clockHour, 0.09],
+      [this.clockMin, 0.15],
+    ] as const) {
+      hand.geometry.translate(0, len, 0); // rotate around the clock center
+      hand.position.set(E.x, 3.3, R.d / 2 - 0.18);
+      this.scene.add(hand);
+    }
+
     const deckMat = new THREE.MeshLambertMaterial({ color: 0x0a0a0d, flatShading: true });
     const ledMat = new THREE.MeshBasicMaterial({ color: 0xff5522 });
     for (const ox of [-0.55, 0, 0.55]) {
@@ -255,13 +320,17 @@ export class View {
     }
     // crowd
     const colors = CONFIG.colors;
+    const minionFrom = CONFIG.crowd.dancers + CONFIG.crowd.walkers;
     while (this.npcs.length < frame.npcs.length) {
       const i = this.npcs.length;
+      const isMinion = i >= minionFrom && i < CONFIG.crowd.count - 1;
       const cv = new ClubberView(
-        colors.crowd[i % colors.crowd.length],
+        // minions wear TRUE black — darker than anyone — with an earpiece
+        isMinion ? 0x08080b : colors.crowd[i % colors.crowd.length],
         colors.skin[(i * 2 + 1) % colors.skin.length],
         // taller than the player (1.0), with variety — you look UP at the crowd
-        1.06 + ((i * 37) % 13) * 0.012,
+        isMinion ? 1.12 : 1.06 + ((i * 37) % 13) * 0.012,
+        isMinion,
       );
       this.npcs.push(cv);
       this.scene.add(cv.group);
@@ -271,7 +340,15 @@ export class View {
         grabTarget: gripTarget(frame.npcs[i]),
         dancer: i < CONFIG.crowd.dancers,
         mixing: i === CONFIG.crowd.count - 1, // the DJ works the decks
+        watching: i >= minionFrom && i < CONFIG.crowd.count - 1 ? frame.npcs[i].watch : 0,
       });
+
+    // the stall door + the wall clock ride the snapshot
+    this.doorPivot.rotation.y = frame.doorAngle;
+    const N = CONFIG.night;
+    const hoursIn = (frame.nightT / N.length) * N.hours; // opened at midnight Sat
+    this.clockHour.rotation.z = -((hoursIn % 12) / 12) * Math.PI * 2;
+    this.clockMin.rotation.z = -((hoursIn % 1) * Math.PI * 2);
 
     // light rig rides the beat
     const beatFrac = frame.beat - Math.floor(frame.beat);

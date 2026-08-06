@@ -19,7 +19,8 @@ export const INTERP_DELAY_SNAPS = 2.5;
 // b10: shove removed, items + K, BINARY snapshots (see encodeSnapshot).
 // b11: committed bump animation, right-hand carry, outline highlight, the
 // 5-minute arrangement + K audio (freshness gate — no wire change).
-export const PROTOCOL_VERSION = 11;
+// b12: THE NIGHT — stamina/watch/out per body, clock+phase+door in the header.
+export const PROTOCOL_VERSION = 12;
 
 // ICE: STUN discovers a direct path between machines; TURN *relays* traffic
 // when hard NATs (phone-hotspot carrier CGNAT, strict office wifi) refuse
@@ -121,10 +122,12 @@ export type FastMsg =
 // cut that ~4×. Positions in mm, quats ×32000, velocities in mm/s.
 //
 // Layout (little-endian):
-//   u32 seq · f32 time · u8 nPlayers · u8 nNpcs · u8 nItems
+//   u32 seq · f32 time · f32 nightT · u8 phase · i16 doorAngle(mrad) ·
+//   u8 nPlayers · u8 nNpcs · u8 nItems
 //   per player: u8 playerNum, body
 //   per npc:    body
-//   body: u8 st · u8 act · u8 k(×51) · u8 hasGrip ·
+//   body: u8 st · u8 act · u8 k(×51) · u8 stam(×255) · u8 watch(×255) ·
+//         u8 flags(bit0 out · bit1 hasGrip) ·
 //         i16 pos xyz (mm) · i16 quat xyzw (×32000) · i16 vel xyz (mm/s) ·
 //         [i16 grip xyz (mm) if hasGrip]
 //   per item: u8 kind · u8 holderNum (255 = loose) · u8 doses ·
@@ -136,7 +139,7 @@ const QV = 1000; // velocity → mm/s
 
 export function encodeSnapshot(seq: number, snap: SimSnapshot): ArrayBuffer {
   const ids = Object.keys(snap.players);
-  let size = 4 + 4 + 3;
+  let size = 4 + 4 + 4 + 1 + 2 + 3;
   for (const id of ids) size += 1 + bodySize(snap.players[id]);
   for (const b of snap.npcs) size += bodySize(b);
   size += snap.items.length * 17;
@@ -147,6 +150,11 @@ export function encodeSnapshot(seq: number, snap: SimSnapshot): ArrayBuffer {
   o += 4;
   dv.setFloat32(o, snap.time, true);
   o += 4;
+  dv.setFloat32(o, snap.nightT, true);
+  o += 4;
+  dv.setUint8(o++, snap.phase);
+  dv.setInt16(o, clampI16(snap.doorAngle * 1000), true);
+  o += 2;
   dv.setUint8(o++, ids.length);
   dv.setUint8(o++, snap.npcs.length);
   dv.setUint8(o++, snap.items.length);
@@ -174,6 +182,11 @@ export function decodeSnapshot(raw: ArrayBuffer | ArrayBufferView, bpm: number):
   o += 4;
   const time = dv.getFloat32(o, true);
   o += 4;
+  const nightT = dv.getFloat32(o, true);
+  o += 4;
+  const phase = dv.getUint8(o++) as SimSnapshot['phase'];
+  const doorAngle = dv.getInt16(o, true) / 1000;
+  o += 2;
   const nPlayers = dv.getUint8(o++);
   const nNpcs = dv.getUint8(o++);
   const nItems = dv.getUint8(o++);
@@ -201,7 +214,16 @@ export function decodeSnapshot(raw: ArrayBuffer | ArrayBufferView, bpm: number):
     o += 8;
     items.push({ kind, pos, rot, holder: holderNum === 255 ? null : `p${holderNum}`, doses });
   }
-  const snap: SimSnapshot = { time, beat: (time * bpm) / 60, players, npcs, items };
+  const snap: SimSnapshot = {
+    time,
+    beat: (time * bpm) / 60,
+    nightT,
+    phase,
+    doorAngle,
+    players,
+    npcs,
+    items,
+  };
   return Object.assign(snap, { seq }) as SimSnapshot & { seq: number };
 }
 
@@ -211,14 +233,16 @@ export function snapshotSeq(snap: SimSnapshot): number {
 }
 
 function bodySize(b: BodySnap): number {
-  return 24 + (b.gripPoint ? 6 : 0);
+  return 26 + (b.gripPoint ? 6 : 0);
 }
 
 function writeBody(dv: DataView, o: number, b: BodySnap): number {
   dv.setUint8(o++, b.st);
   dv.setUint8(o++, b.act);
   dv.setUint8(o++, Math.max(0, Math.min(255, Math.round(b.k * 51))));
-  dv.setUint8(o++, b.gripPoint ? 1 : 0);
+  dv.setUint8(o++, Math.max(0, Math.min(255, Math.round(b.stam * 255))));
+  dv.setUint8(o++, Math.max(0, Math.min(255, Math.round(b.watch * 255))));
+  dv.setUint8(o++, (b.out ? 1 : 0) | (b.gripPoint ? 2 : 0));
   o = writeI16x3(dv, o, b.pos.x * QP, b.pos.y * QP, b.pos.z * QP);
   o = writeQuat(dv, o, b.rot);
   o = writeI16x3(dv, o, b.vel.x * QV, b.vel.y * QV, b.vel.z * QV);
@@ -232,7 +256,10 @@ function readBody(dv: DataView, o: number): [BodySnap, number] {
   const st = dv.getUint8(o++) as BodySnap['st'];
   const act = dv.getUint8(o++) as BodySnap['act'];
   const k = dv.getUint8(o++) / 51;
-  const hasGrip = dv.getUint8(o++) === 1;
+  const stam = dv.getUint8(o++) / 255;
+  const watch = dv.getUint8(o++) / 255;
+  const flags = dv.getUint8(o++);
+  const hasGrip = (flags & 2) !== 0;
   const pos = { x: dv.getInt16(o, true) / QP, y: dv.getInt16(o + 2, true) / QP, z: dv.getInt16(o + 4, true) / QP };
   o += 6;
   const rot = readQuat(dv, o);
@@ -244,7 +271,7 @@ function readBody(dv: DataView, o: number): [BodySnap, number] {
     gripPoint = { x: dv.getInt16(o, true) / QP, y: dv.getInt16(o + 2, true) / QP, z: dv.getInt16(o + 4, true) / QP };
     o += 6;
   }
-  return [{ pos, rot, vel, st, act, k, gripPoint }, o];
+  return [{ pos, rot, vel, st, act, k, stam, watch, out: (flags & 1) !== 0, gripPoint }, o];
 }
 
 function writeI16x3(dv: DataView, o: number, a: number, b: number, c: number): number {

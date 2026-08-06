@@ -13,6 +13,9 @@ import { installDebug } from './debug';
 
 const app = document.getElementById('app')!;
 const hud = document.getElementById('hud')!;
+const stambox = document.getElementById('stambox')!;
+const stamfill = document.getElementById('stamfill')!;
+const bigmsg = document.getElementById('bigmsg')!;
 const menu = document.getElementById('menu')!;
 const btnHost = document.getElementById('btnHost') as HTMLButtonElement;
 const btnJoin = document.getElementById('btnJoin') as HTMLButtonElement;
@@ -62,7 +65,23 @@ async function start(mode: 'host' | 'join'): Promise<void> {
     const frame = session.renderFrame();
     let itemLine = '';
     if (frame) {
-      audio.update(frame.beat, frame.players[session.localId]?.k ?? 0);
+      const meSnap = frame.players[session.localId];
+      audio.update(frame.beat, meSnap?.k ?? 0, meSnap?.watch ?? 0);
+      // THE bar + the night's endings
+      if (meSnap) {
+        stambox.style.display = 'block';
+        stamfill.style.width = `${Math.round(meSnap.stam * 100)}%`;
+        stamfill.style.background = meSnap.stam < 0.25 ? '#e0484f' : '#cfd2dc';
+        if (meSnap.out) {
+          bigmsg.style.display = 'flex';
+          bigmsg.textContent = 'ESCORTED OUT\nthe Curator has seen enough';
+        } else if (frame.phase === 1) {
+          bigmsg.style.display = 'flex';
+          bigmsg.textContent = 'CLOSING TIME\nyou lasted the Klubnacht';
+        } else {
+          bigmsg.style.display = 'none';
+        }
+      }
       // Peak-style pickup flow: what you're looking at highlights, the HUD
       // says what RMB would do, and holding shows the bag's state
       let targeted = -1;

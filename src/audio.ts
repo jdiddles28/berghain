@@ -24,6 +24,7 @@ export class ClubAudio {
   private beatZeroCtxTime = 0; // ctx.currentTime at which beat 0 plays
   private anchored = false;
   private k = 0; // felt ketamine level 0..5 (local player)
+  private parGain!: GainNode;
   private nextGhostAt = 0; // ctx time of the next hallucination
   private recentEvents: GameEvent['t'][] = [];
 
@@ -69,11 +70,19 @@ export class ClubAudio {
     lfo.connect(lfoAmt);
     lfoAmt.connect(this.delay.delayTime);
     lfo.start();
+    // paranoia: a low throb that swells when the minions have eyes on you
+    this.parGain = this.ctx.createGain();
+    this.parGain.gain.value = 0;
+    const par = this.ctx.createOscillator();
+    par.frequency.value = 46;
+    par.connect(this.parGain);
+    this.parGain.connect(this.kFilter);
+    par.start();
   }
 
-  /** Call every render frame with the interpolated sim beat and the local
-   *  player's felt K level. */
-  update(renderBeat: number, k = 0): void {
+  /** Call every render frame with the interpolated sim beat, the local
+   *  player's felt K level, and how watched they are. */
+  update(renderBeat: number, k = 0, watched = 0): void {
     if (!this.ctx) return;
     const ctx = this.ctx;
     const beatLen = 60 / CONFIG.music.bpm;
@@ -81,6 +90,11 @@ export class ClubAudio {
 
     // K sound state — smooth walks, no zipper noise
     const now = ctx.currentTime;
+    this.parGain.gain.setTargetAtTime(
+      watched * (0.045 + 0.04 * Math.abs(Math.sin(now * 2.7))),
+      now,
+      0.15,
+    );
     const cutoff = Math.max(440, 18000 * Math.exp(-0.72 * k));
     this.kFilter.frequency.setTargetAtTime(cutoff, now, 0.4);
     this.wet.gain.setTargetAtTime((k / 5) * 0.55, now, 0.5);
@@ -443,6 +457,12 @@ export class ClubAudio {
       else if (ev.t === 'pickup') this.thud(t, 0.2);
       else if (ev.t === 'throw') this.whoosh(t);
       else if (ev.t === 'dose') this.sniff(t);
+      else if (ev.t === 'eject') {
+        // the door hits the frame behind somebody
+        this.thud(t, 1);
+        this.noiseBurst(t, 0.2, 0.4, 500).connect(this.master);
+        this.subDrop(t + 0.05);
+      }
     }
   }
 

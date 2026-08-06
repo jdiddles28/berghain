@@ -276,12 +276,13 @@ describe('items — the bag of K', () => {
     run2(sim, 30, {}, {});
     pickUpBag(sim); // p0 holds it (p1 idles at spawn)
     expect(sim.snapshot().items[0].holder).toBe('p0');
-    // p0 faces the floor (+z) so the bag is held toward p1; p1 walks up and takes it
+    // p0 faces the floor (+z) so the bag is held toward p1. The bag rides the
+    // RIGHT hand (x −0.18 in body space since b11) — p1 lines up on that side.
     const b = sim.players.get('p1')!;
-    b.body.setTranslation({ x: -0.1, y: 0.83, z: -1.9 }, true);
+    b.body.setTranslation({ x: -0.5, y: 0.83, z: -1.9 }, true);
     b.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
     run2(sim, 25, { faceYaw: 0 }, { faceYaw: Math.PI });
-    run2(sim, 3, { faceYaw: 0 }, { grab: true, faceYaw: Math.PI, facePitch: -0.35 });
+    run2(sim, 3, { faceYaw: 0 }, { grab: true, faceYaw: Math.PI, facePitch: -0.28 });
     expect(sim.snapshot().items[0].holder).toBe('p1');
     expect(sim.players.get('p0')!.holding).toBeNull();
   });

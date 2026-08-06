@@ -22,6 +22,73 @@ export const CONFIG = {
     // DJ booth ON the stage: the board is a solid table (grabbable, climbable
     // like everything), the DJ stands behind it facing the floor
     dj: { x: 0, z: -4.95, boardZ: -4.15, boardW: 1.7, boardD: 0.5, boardH: 0.8 },
+    // the way out — where the minions drag you, under the wall clock
+    exit: { x: 0, z: 5.85, w: 1.5 },
+  },
+
+  // the bathroom stall in the -x/+z corner: real walls, a real hinged door
+  // (universal grab opens it; NPCs shoulder through; a weak spring swings it
+  // shut). Inside with the door closed = out of every line of sight.
+  bathroom: {
+    // stall footprint: corner walls at x=-8 and z=+6 exist; we add two more
+    innerX: -5.9, // stall wall parallel to the x wall
+    innerZ: 3.9, // stall wall parallel to the z wall (the door lives here)
+    doorHingeX: -6.75, // door hangs off this end of the innerZ wall
+    doorW: 0.8,
+    doorH: 2.0,
+    doorSpring: 6, // N·m toward closed — stall doors swing shut
+    doorDamp: 4,
+    // the queue forms along the innerZ wall, heading +x away from the door
+    queueStart: { x: -5.3, z: 4.7 },
+    queueDx: 0.75,
+    queueSlots: 6,
+    joinRadius: 0.9, // stand this close to the tail slot and you're IN line
+    npcUseTime: [9, 16] as const, // s an NPC spends in the stall
+    npcNeedEvery: [25, 60] as const, // s between a given walker needing to go
+  },
+
+  // THE NIGHT — the whole MVP loop. One bar (stamina), a clock, a way to
+  // lose (ejected) and a way to win (closing time).
+  night: {
+    length: 720, // s of real time for the full Klubnacht (test compression)
+    hours: 32, // midnight Sat → 8am Mon
+    // stamina is a 0..1 bar. Drain RAMPS across the night: early you barely
+    // need anything, by the end you're redosing constantly and riding the
+    // k-hole edge — that escalation is the central conflict.
+    drainStart: 0.004, // fraction/s at open (~4 min a bar)
+    drainEnd: 0.02, // fraction/s at close (~50 s a bar)
+    sprintDrainMult: 3.5, // sprinting burns the bar — you can't run forever
+    danceDrainMult: 1.0, // (dancing economy is Build 3)
+    bumpRefill: 0.38, // one bump of K puts this much back in the bar
+    kDrainSlowPerLevel: 0.09, // being high slows the drain — the long ride
+    collapseAt: 0.0, // bar empty → you fold up where you stand
+    collapseRegen: 0.012, // fraction/s while collapsed — sleeping it off
+    standAt: 0.3, // enough in the bar to get back on your feet
+  },
+
+  // the Curator's minions: silent, black-clad, patrolling the edges. They
+  // only care about what they can SEE (real line of sight, bodies block).
+  curator: {
+    minions: 3,
+    viewRange: 6.5,
+    viewHalfAngleDeg: 60,
+    // heat: per-player suspicion 0..1. Only accumulates while a minion has
+    // eyes on you DOING something ejectable; slowly forgotten otherwise.
+    heatDosing: 0.4, // per s observed mid-bump
+    heatDown: 0.3, // per s observed collapsed/k-holed on the floor
+    heatWrecked: 0.22, // per s observed moving at kFelt ≥ wreckedAt
+    wreckedAt: 3.3,
+    heatKnockdown: 0.55, // instantly, for flooring someone in view
+    heatDecay: 0.035, // per s unobserved
+    ejectAt: 1.0,
+    // the walk of shame: a minion hunts you, grips you, drags you to the
+    // exit. Friends can body-check the minion to tear the grip — a rescue.
+    hunterSpeed: 2.4, // m/s — faster than your walk, slower than your sprint
+    catchDist: 0.95,
+    dragSpeed: 1.5, // m/s hauling you to the door
+    ejectDist: 1.3, // this close to the exit with you in tow = you're out
+    scanEvery: [4, 9] as const, // patrol: pause and sweep the room
+    scanFor: [1.5, 3.5] as const,
   },
 
   // Peak-style wobbly body: a DYNAMIC capsule held upright by a limited spring.
@@ -181,7 +248,11 @@ export const CONFIG = {
   },
 
   crowd: {
-    count: 36, // 22 dancers + 13 walkers + the DJ (always the LAST index)
+    // 22 dancers + 13 walkers + 3 minions + the DJ (always the LAST index).
+    // role by index: [0,dancers) dance · [dancers,dancers+walkers) walk ·
+    // then minions · last is the DJ.
+    count: 39,
+    walkers: 13,
     radius: 0.27,
     halfHeight: 0.55, // NPCs are TALLER than the player — you look up at the crowd
     mass: 82, // people are HEAVY — bodying through a human should cost you

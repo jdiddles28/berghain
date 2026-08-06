@@ -30,6 +30,9 @@ export interface ClubberFrameOpts {
   dancer?: boolean;
   /** the DJ: hands work the decks, one goes up at the top of each phrase */
   mixing?: boolean;
+  /** minions only: how hard they're watching someone, 0..1 — the eyes catch
+   *  a faint red light. THE feeling-of-being-observed tell. */
+  watching?: number;
   /** local player's camera pitch so FP arm thrust/reach follows the look */
   aimPitch?: number;
 }
@@ -49,14 +52,16 @@ export class ClubberView {
   private walkPhase = 0;
   private dancePhase = Math.random() * Math.PI * 2;
   private scale: number;
+  private headMat: THREE.MeshLambertMaterial;
 
-  constructor(outfit: number, skin: number, scale = 1) {
+  constructor(outfit: number, skin: number, scale = 1, minion = false) {
     this.scale = scale;
     const s = scale;
     const outfitMat = new THREE.MeshLambertMaterial({ color: outfit, flatShading: true });
-    const pants = new THREE.Color(outfit).multiplyScalar(0.55);
+    const pants = new THREE.Color(outfit).multiplyScalar(minion ? 1 : 0.55);
     const pantsMat = new THREE.MeshLambertMaterial({ color: pants, flatShading: true });
     const skinMat = new THREE.MeshLambertMaterial({ color: skin, flatShading: true });
+    this.headMat = skinMat;
 
     // torso: chest tapering through a waist into hips — a person, not a pill
     this.chest = new THREE.Mesh(new THREE.BoxGeometry(0.42 * s, 0.32 * s, 0.24 * s), outfitMat);
@@ -68,6 +73,15 @@ export class ClubberView {
 
     this.head = new THREE.Mesh(new THREE.IcosahedronGeometry(0.15 * s, 1), skinMat);
     this.head.position.y = 0.61 * s;
+    if (minion) {
+      // the one thing that gives them away up close: the earpiece
+      const ear = new THREE.Mesh(
+        new THREE.BoxGeometry(0.035 * s, 0.045 * s, 0.03 * s),
+        new THREE.MeshLambertMaterial({ color: 0xd8dbe4, flatShading: true }),
+      );
+      ear.position.set(-0.14 * s, 0.0, 0.02 * s);
+      this.head.add(ear);
+    }
 
     const armGeo = new THREE.CapsuleGeometry(0.068 * s, 0.36 * s, 1, 5);
     this.armL = this.limb(armGeo, outfitMat, -0.28 * s, 0.4 * s, -0.22 * s);
@@ -135,6 +149,10 @@ export class ClubberView {
     this.group.position.set(b.pos.x, b.pos.y, b.pos.z);
     this.group.quaternion.set(b.rot.x, b.rot.y, b.rot.z, b.rot.w);
     this.group.updateMatrixWorld();
+
+    // watching = the eyes catch red light
+    const w = opts?.watching ?? 0;
+    this.headMat.emissive.setRGB(w * 0.55, w * 0.05, w * 0.05);
 
     const speed = Math.hypot(b.vel.x, b.vel.z);
     this.walkPhase += speed * dt * 5.2;
