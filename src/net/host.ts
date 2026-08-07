@@ -32,6 +32,10 @@ interface Remote {
   fast: DataConnection | null;
   input: PlayerInput;
   hopLatch: boolean;
+  // poured/snorted grams are QUANTITIES, not held states: they accumulate
+  // across packets and are consumed by exactly one sim step (b17)
+  pourAcc: number;
+  snortAcc: number;
   lastInputAt: number;
   admitted: boolean; // hello received + version matched — actually IN the game
 }
@@ -46,6 +50,8 @@ export class HostSession implements Session {
   private accumulator = 0;
   private seq = 0;
   private localHop = false;
+  private localPourAcc = 0;
+  private localSnortAcc = 0;
   private pendingEvents: GameEvent[] = [];
 
   private peer: Peer | null = null;
@@ -116,6 +122,8 @@ export class HostSession implements Session {
         fast: null,
         input: { ...ZERO_INPUT },
         hopLatch: false,
+        pourAcc: 0,
+        snortAcc: 0,
         lastInputAt: performance.now(),
         admitted: false,
       };
@@ -176,7 +184,13 @@ export class HostSession implements Session {
             use: msg.u === 1,
             drop: msg.d === 1,
             dance: msg.dn === 1,
+            slot: msg.sl ?? 0,
+            cutPhase: msg.cp ?? 0,
+            pour: 0, // quantities ride the accumulators, not the held state
+            snort: 0,
           };
+          remote.pourAcc += msg.pr ?? 0;
+          remote.snortAcc += msg.sn ?? 0;
           if (msg.h === 1) remote.hopLatch = true;
           remote.lastInputAt = performance.now();
         } else if (msg.t === 'pi') {
@@ -205,20 +219,35 @@ export class HostSession implements Session {
     this.lastFrameAt = performance.now();
     this.accumulator += Math.min(frameDt, 0.5);
     this.localHop ||= localInput.hop;
+    // grams are quantities: a frame can run 0 or several sim steps, so they
+    // buffer here and exactly ONE step consumes them (b17)
+    this.localPourAcc += localInput.pour;
+    this.localSnortAcc += localInput.snort;
     const dt = CONFIG.sim.dt;
     const now = performance.now();
 
     while (this.accumulator >= dt) {
       const inputs = new Map<string, PlayerInput>();
-      inputs.set(this.localId, { ...localInput, hop: this.localHop });
+      inputs.set(this.localId, {
+        ...localInput,
+        hop: this.localHop,
+        pour: this.localPourAcc,
+        snort: this.localSnortAcc,
+      });
       this.localHop = false;
+      this.localPourAcc = 0;
+      this.localSnortAcc = 0;
       for (const r of this.remotes.values()) {
         const stale = now - r.lastInputAt > 500;
         inputs.set(
           r.playerId,
-          stale ? { ...ZERO_INPUT } : { ...r.input, hop: r.hopLatch },
+          stale
+            ? { ...ZERO_INPUT }
+            : { ...r.input, hop: r.hopLatch, pour: r.pourAcc, snort: r.snortAcc },
         );
         r.hopLatch = false;
+        r.pourAcc = 0;
+        r.snortAcc = 0;
       }
 
       this.prevSnap = this.currSnap;

@@ -128,6 +128,51 @@
         );
         z-index: 2;
       }
+      /* the boogie meter (b17): the bar only dancing refills */
+      #boogiebox {
+        position: fixed;
+        left: 12px;
+        bottom: 52px;
+        width: 210px;
+        height: 8px;
+        background: #101014cc;
+        border: 1px solid #3a3650;
+        display: none;
+      }
+      #boogiefill {
+        position: absolute;
+        left: 0;
+        top: 0;
+        height: 100%;
+        width: 100%;
+        background: #e0a34f;
+      }
+      /* the inventory (b17): three Peak-style slots, wheel to select */
+      #inv {
+        position: fixed;
+        left: 50%;
+        bottom: 10px;
+        transform: translateX(-50%);
+        display: none;
+        gap: 6px;
+      }
+      #inv .slot {
+        width: 74px;
+        height: 30px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 11px;
+        letter-spacing: 1px;
+        color: #9a9dad;
+        background: #101014b8;
+        border: 1px solid #33304a;
+      }
+      #inv .slot.sel {
+        border-color: #cfd2dc;
+        color: #e8e8ee;
+        background: #1a1826d9;
+      }
       /* deep-K tunnel vision — opacity driven from the view layer */
       #kvig {
         position: fixed;
@@ -151,7 +196,7 @@
         font-weight: 300;
         letter-spacing: 8px;
         color: #e8e8ee;
-        background: #050508d9;
+        background: #050508fa;
         white-space: pre-line;
         line-height: 2.2;
         z-index: 5;
@@ -179,6 +224,12 @@
     <div id="app"></div>
     <div id="hud"></div>
     <div id="stambox"><div id="stamfill"></div><div id="stamcap"></div></div>
+    <div id="boogiebox"><div id="boogiefill"></div></div>
+    <div id="inv">
+      <div class="slot" id="inv0"></div>
+      <div class="slot" id="inv1"></div>
+      <div class="slot" id="inv2"></div>
+    </div>
     <div id="kvig"></div>
     <div id="bigmsg">
       <span id="bigmsgText"></span>
@@ -194,7 +245,7 @@
         <button id="btnJoin">JOIN</button>
       </div>
       <div class="hint">
-        first person — WASD move · mouse look · RMB grab / pick up · LMB use · Q drop (hold: throw) · SPACE hop · E dance (toggle)<br />
+        first person — WASD move · mouse look · wheel: pick a pocket · RMB grab / pick up · hold LMB on the bag: cut up lines · Q drop (hold: throw) · SPACE hop · E dance (toggle)<br />
         in-game proximity voice — ALLOW THE MIC when asked · V to mute · get close to be heard
       </div>
     </div>

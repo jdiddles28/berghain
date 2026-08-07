@@ -49,7 +49,8 @@ export interface Item {
   collider: RAPIER.Collider;
   holder: Character | null;
   holderId: string | null;
-  doses: number;
+  /** bags only: grams of K left (a full bag is CONFIG.ketamine.bagGrams) */
+  grams: number;
   /** who loosed it and when — a thrown bag that clocks a minion is a strike */
   thrownBy: Character | null;
   thrownAt: number;
@@ -67,18 +68,26 @@ export class Character {
   hopCd = 0;
   /** universal grip: any solid body, stuck at the exact contact point */
   grip: { body: RAPIER.RigidBody; local: { x: number; y: number; z: number } } | null = null;
-  // items in hand
-  holding: Item | null = null;
+  // the inventory (b17): three Peak-style slots. Every carried thing is a
+  // real item — the SELECTED one rides the right hand, the rest are pocketed
+  // (invisible, unstealable). `holding` = whatever is in the hand right now.
+  slots: (Item | null)[] = [null, null, null];
+  selSlot = 0;
+  get holding(): Item | null {
+    return this.slots[Math.max(0, Math.min(2, this.selSlot))];
+  }
   prevGrab = false; // pickup fires on the RMB edge, not every held frame
   prevDrop = false;
   dropT = 0; // how long Q has been held — tap drops, a hold charges a throw
-  useT = 0; // progress through the committed bump animation
-  prevUse = false; // bumps fire on the LMB EDGE — holding does nothing
-  dosing = false;
+  // the cutting ritual (b17): validated phase + the powder on this phone
+  cutPhase: 0 | 1 | 2 | 3 = 0;
+  snorting = false; // phase 3 with the bill actually hoovering (LMB held)
+  snortF = 0; // eased 0..1 hand-to-face travel for the view
+  phoneG = 0; // grams sitting on the phone screen — a knockdown spills it ALL
   // ketamine (players only)
-  kLevel = 0; // true level 0..5
+  kLevel = 0; // true level: 0.5-g-bucket steps, k-hole at 5, overdose up to 10
   kFelt = 0; // eased level the effects run off — arrives/fades smoothly
-  kPending: number[] = []; // sim-times at which taken bumps HIT (onset delay)
+  kPending: { at: number; lv: number }[] = []; // snorted lines riding the onset delay
   kLastChange = 0;
   kDriftPhase = Math.random() * Math.PI * 2;
   kInX = 0; // smoothed move input while high — the "kept walking" overshoot
@@ -89,7 +98,9 @@ export class Character {
   // THE NIGHT (players)
   stamina = 1;
   staminaDown = false; // bar hit empty — folded up, sleeping it off
+  boogie = 1; // the boogie meter (b17): only dancing refills it; empty = out
   out = false; // ejected. it's over.
+  outWhy: 0 | 1 = 0; // 0 = escorted by the Curator · 1 = boogie hit zero
   heat = 0; // Curator suspicion 0..1
   heatObs = false; // observed doing something ejectable this step
   watchSignal = 0; // players: how watched · minions: how hard they're watching
@@ -132,6 +143,8 @@ export class Character {
   annoyT = 0; // occupant: how long an intruder has been standing in MY stall
   alertPhase: 0 | 1 | 2 = 0; // alerting: seeking a bouncer · leading it back
   alertTarget: Character | null = null; // who pissed them off
+  alertProblem: 0 | 1 = 0; // 0 = hogging the bathroom · 1 = cutting lines on the dancefloor
+  alertSpot: { x: number; z: number } | null = null; // where the incident was (problem 1)
   stareYaw: number | null = null; // face THIS way while standing (annoyed stare)
   knockAnimT = 0; // arm-rap animation window (act 5)
   dancingNow = false; // player's dance state is ON (act 4)
@@ -418,7 +431,7 @@ export class Sim {
     if (holderNpc) {
       hb.holder = holderNpc;
       hb.holderId = null; // NPCs have no pid — snapItems maps them to n<idx>
-      holderNpc.holding = hb;
+      holderNpc.slots[0] = hb;
       hb.body.setBodyType(RAPIER.RigidBodyType.KinematicPositionBased, true);
       hb.collider.setSensor(true);
     }
@@ -447,7 +460,39 @@ export class Sim {
       collider: col,
       holder: null,
       holderId: null,
-      doses: CONFIG.ketamine.dosesPerBag,
+      grams: CONFIG.ketamine.bagGrams,
+      thrownBy: null,
+      thrownAt: 0,
+    };
+    this.items.push(it);
+    return it;
+  }
+
+  /** the personal kit (b17): every player arrives with a credit card and a
+   *  rolled bill already in their pockets — real items (throwable, handable
+   *  to friends), born kinematic straight into the inventory */
+  private makeTool(kind: 1 | 2, holder: Character): Item {
+    const I = CONFIG.items;
+    const p0 = holder.pos();
+    const body = this.world.createRigidBody(
+      RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(p0.x, p0.y, p0.z),
+    );
+    const desc =
+      kind === 1
+        ? RAPIER.ColliderDesc.cuboid(I.card.w / 2, I.card.h / 2 + 0.004, I.card.d / 2)
+        : RAPIER.ColliderDesc.cuboid(I.bill.r, I.bill.r, I.bill.len / 2);
+    const col = this.world.createCollider(
+      desc.setFriction(0.5).setDensity(0).setSensor(true),
+      body,
+    );
+    col.setMass(kind === 1 ? I.card.mass : I.bill.mass);
+    const it: Item = {
+      kind,
+      body,
+      collider: col,
+      holder,
+      holderId: holder.pid || null,
+      grams: 0,
       thrownBy: null,
       thrownAt: 0,
     };
@@ -544,6 +589,11 @@ export class Sim {
     const p = new Character(this.world, cfg, -2 + n * 2, CONFIG.room.d / 2 - 1.6, true);
     p.pid = id;
     this.players.set(id, p);
+    // the personal kit (b17): slot 1 stays empty for a bag; card and bill
+    // come with you (John: "when you start the first slot is empty, and the
+    // 2nd has a card and the 3rd a rolled bill")
+    p.slots[1] = this.makeTool(1, p);
+    p.slots[2] = this.makeTool(2, p);
   }
 
   removePlayer(id: string): void {
@@ -553,7 +603,7 @@ export class Sim {
       if (other.grip?.body === p.body) this.releaseGrip(other);
     }
     this.releaseGrip(p);
-    if (p.holding) this.releaseItem(p, 0, null);
+    for (const it of [...p.slots]) if (it) this.releaseItem(p, it, 0, null);
     this.world.removeRigidBody(p.body);
     this.players.delete(id);
   }
@@ -608,6 +658,7 @@ export class Sim {
     this.updateQueue();
     this.updateNeedScheduler(dt);
     this.updateStallPressure(dt);
+    this.updateTattling(dt);
     for (const npc of this.npcs) {
       this.updateNpcBrain(npc, dt);
     }
@@ -701,6 +752,15 @@ export class Sim {
       ch.kInX = input.moveX;
       ch.kInZ = input.moveZ;
     }
+    // mid-ritual you are STANDING there doing drugs (b17): both hands are
+    // full and the mouse is your hand, so the body plants until you put it
+    // all away (or something puts it away for you)
+    if (ch.cutPhase > 0) {
+      mvX = 0;
+      mvZ = 0;
+    }
+    // hand-to-face travel for the snort read (spectators must SEE the sniff)
+    ch.snortF += ((ch.snorting ? 1 : 0) - ch.snortF) * Math.min(1, dt * 6);
     const eff: PlayerInput = mvX === input.moveX && mvZ === input.moveZ
       ? input
       : { ...input, moveX: mvX, moveZ: mvZ };
@@ -761,7 +821,7 @@ export class Sim {
         Math.hypot(input.moveX, input.moveZ) > 0.15 ||
         input.hop ||
         input.grab ||
-        ch.dosing
+        ch.cutPhase > 0
       ) {
         ch.danceOn = false;
       }
@@ -792,14 +852,17 @@ export class Sim {
     if (ch.isPlayer) this.updateItemVerbs(ch, input, dt);
   }
 
-  /** RMB: items first (Peak-style pickup, incl. stealing from hands), then the
-   *  universal body-grab. Q: tap to drop, hold to charge a throw. LMB: use
-   *  what's in your hand — for the K bag, hold to take a bump. */
+  /** RMB: items first (Peak-style pickup into a free slot, incl. stealing the
+   *  item in someone's HAND — pockets are safe), then the universal body-grab.
+   *  Mouse wheel picked the slot; Q taps drop / holds a throw of the selected
+   *  item. The cutting ritual (LMB flow) is validated in updateCutting. */
   private updateItemVerbs(ch: Character, input: PlayerInput, dt: number): void {
+    ch.selSlot = Math.max(0, Math.min(2, Math.round(input.slot) || 0));
+
     // pickup on the RMB edge only — held RMB must not vacuum the bag back
     // into your hand the instant you drop it
     const grabEdge = input.grab && !ch.prevGrab;
-    if (grabEdge && !ch.holding && ch.state === 0) {
+    if (grabEdge && ch.state === 0) {
       const idx = this.targetItemFor(ch, input);
       if (idx >= 0) this.pickupItem(ch, this.items[idx]);
     }
@@ -809,20 +872,27 @@ export class Sim {
     else if ((!input.grab || ch.holding) && ch.grip) this.releaseGrip(ch);
     ch.prevGrab = input.grab;
 
-    // drop / charged throw
-    if (ch.holding) {
+    // drop / charged throw — the SELECTED item only; pockets stay pockets
+    const held = ch.holding;
+    if (held) {
       if (input.drop) {
         ch.dropT = Math.min(ch.dropT + dt, CONFIG.items.throwChargeMax);
       } else if (ch.prevDrop) {
         const I = CONFIG.items;
         if (ch.dropT < I.throwChargeMin) {
-          this.releaseItem(ch, 0, input);
+          this.releaseItem(ch, held, 0, input);
         } else {
           const c = Math.min(
             1,
             (ch.dropT - I.throwChargeMin) / (I.throwChargeMax - I.throwChargeMin),
           );
-          this.releaseItem(ch, I.throwSpeed[0] + (I.throwSpeed[1] - I.throwSpeed[0]) * c, input, true);
+          this.releaseItem(
+            ch,
+            held,
+            I.throwSpeed[0] + (I.throwSpeed[1] - I.throwSpeed[0]) * c,
+            input,
+            true,
+          );
         }
         ch.dropT = 0;
       }
@@ -831,43 +901,54 @@ export class Sim {
     }
     ch.prevDrop = input.drop;
 
-    // a bump is a COMMITTED one-shot (John): the LMB edge starts the set
-    // animation — bag up, sniff mid-way, bag back down, dose applies at the
-    // end. Holding longer does nothing; release and press again for another.
-    const KT = CONFIG.ketamine;
-    const useEdge = input.use && !ch.prevUse;
-    if (
-      !ch.dosing &&
-      useEdge &&
-      ch.holding &&
-      ch.holding.kind === 0 &&
-      ch.holding.doses > 0 &&
-      ch.state === 0
-    ) {
-      ch.dosing = true;
-      ch.useT = 0;
-    }
-    if (ch.dosing) {
-      if (!ch.holding || ch.state !== 0) {
-        ch.dosing = false; // floored, or the bag got snatched mid-bump: no dose
-        ch.useT = 0;
-      } else {
-        const prev = ch.useT;
-        ch.useT += dt;
-        const sniffT = KT.doseAnimTime * KT.doseSniffAt;
-        if (prev < sniffT && ch.useT >= sniffT) this.emit({ t: 'dose', ...vec(ch.pos()) });
-        if (ch.useT >= KT.doseAnimTime) {
-          ch.dosing = false;
-          ch.useT = 0;
-          ch.holding.doses--;
-          ch.kPending.push(this.time + KT.onsetDelay);
-          // the refill: a fixed absolute chunk, clamped to the night's
-          // shrinking ceiling — late-game overshoot is simply wasted
-          ch.stamina = Math.min(maxStamina(this.nightT), ch.stamina + CONFIG.night.bumpRefill);
-        }
+    this.updateCutting(ch, input);
+  }
+
+  /** the line-cutting ritual (b17, John's minigame). The CLIENT runs the
+   *  powder feel (the grid on the phone screen) and reports its phase plus
+   *  grams poured/snorted; the host VALIDATES everything that matters: each
+   *  phase needs the right tool in your pockets (no card? borrow one), every
+   *  gram is clamped to what the bag/phone actually holds, and the DOSE
+   *  quantizes to the secret 0.025 g bucket — two lines that look slightly
+   *  different can register identically. That's the fun. */
+  private updateCutting(ch: Character, input: PlayerInput): void {
+    const K = CONFIG.ketamine;
+    const has = (kind: ItemKind) => ch.slots.some((s) => s !== null && s.kind === kind);
+    let phase = input.cutPhase;
+    if (ch.state !== 0 || ch.out) phase = 0;
+    if (phase >= 1 && !has(0)) phase = 0;
+    if (phase >= 2 && !has(1)) phase = 0;
+    if (phase >= 3 && !has(2)) phase = 0;
+    ch.cutPhase = phase;
+    // phase 3: the bill hoovers. Outside the ritual, LMB on the bill still
+    // SNORTS — just air (John: "you still do it though")
+    ch.snorting =
+      (phase === 3 && input.use) ||
+      (phase === 0 && input.use && ch.holding !== null && ch.holding.kind === 2 && ch.state === 0);
+
+    if (phase === 1 && input.pour > 0) {
+      const bag = ch.slots.find((s) => s !== null && s.kind === 0);
+      if (bag) {
+        const g = Math.min(input.pour, bag.grams);
+        bag.grams -= g;
+        ch.phoneG += g;
       }
     }
-    ch.prevUse = input.use;
+    if (phase === 3 && input.snort > 0) {
+      const g = Math.min(input.snort, ch.phoneG);
+      ch.phoneG -= g;
+      const buckets = Math.round(g / K.bucketG);
+      if (buckets > 0) {
+        const lv = buckets * K.bucketG * K.levelPerGram; // 0.5 per bucket
+        ch.kPending.push({ at: this.time + K.onsetDelay, lv });
+        // the energy side of a line: the refill scales with the dose
+        ch.stamina = Math.min(
+          maxStamina(this.nightT),
+          ch.stamina + CONFIG.night.bumpRefill * ((buckets * K.bucketG) / 0.05),
+        );
+        this.emit({ t: 'dose', ...vec(ch.pos()) });
+      }
+    }
   }
 
   /** THE bar, b15 economy (the full reasoning: CLAUDE.md + the b15 report).
@@ -880,6 +961,22 @@ export class Sim {
   private updateStamina(ch: Character, input: PlayerInput, dt: number): void {
     const N = CONFIG.night;
     const max = maxStamina(this.nightT);
+    // THE BOOGIE METER (b17, John): only dancing fills it — full rate in the
+    // pack, slower alone in a corner (it's sad) — and it drains whenever you
+    // aren't dancing, INCLUDING face-down in a k-hole: the night doesn't
+    // wait. Empty = you weren't here to party, and you're out.
+    if (this.phase === 0) {
+      if (ch.dancingNow && ch.state === 0) {
+        const rate = N.boogie.fill * (this.onDanceFloor(ch) ? 1 : N.boogie.fillOffFloor);
+        ch.boogie = Math.min(1, ch.boogie + rate * dt);
+      } else {
+        ch.boogie = Math.max(0, ch.boogie - N.boogie.drain * dt);
+        if (ch.boogie <= 0) {
+          this.boogieOut(ch);
+          return;
+        }
+      }
+    }
     if (ch.state === 1) {
       if (ch.staminaDown) {
         ch.stamina = Math.min(max, ch.stamina + N.collapseRegen * dt);
@@ -898,6 +995,10 @@ export class Sim {
     ch.stamina = Math.min(ch.stamina, max); // the night grinds the ceiling down
     let drain = N.drain * Math.max(N.kDrainFloor, 1 - N.kDrainSlowPerLevel * ch.kFelt);
     if (input.sprint && Math.hypot(input.moveX, input.moveZ) > 0.1) drain *= N.sprintDrainMult;
+    // dancing burns real energy (b17) — and because the K drain-slow already
+    // multiplied in above, dancing ON k costs less than dancing sober. That
+    // trade is the whole dance economy (John).
+    if (ch.dancingNow) drain *= N.danceDrainMult;
     ch.stamina = Math.max(0, ch.stamina - drain * dt);
     if (ch.stamina <= N.collapseAt && !ch.staminaDown) {
       ch.staminaDown = true;
@@ -909,24 +1010,57 @@ export class Sim {
     }
   }
 
-  /** level bookkeeping: bumps hit on a delay, levels decay on a timer, the
-   *  FELT level eases between them, and level 5 is the k-hole. */
+  /** level bookkeeping (b17): snorted lines hit on a delay carrying however
+   *  many 0.025 g buckets they held; levels decay in HALF-steps (granular
+   *  surfacing), the FELT level eases between them, 5 is the k-hole — and an
+   *  overdose stacks PAST 5 (up to levelCap), so a double line means waiting
+   *  down through every extra step before you're allowed to stand. */
   private updateKetamine(ch: Character, _input: PlayerInput, dt: number): void {
     const K = CONFIG.ketamine;
-    while (ch.kPending.length > 0 && this.time >= ch.kPending[0]) {
-      ch.kPending.shift();
-      if (ch.kLevel < K.maxLevel) ch.kLevel++;
+    while (ch.kPending.length > 0 && this.time >= ch.kPending[0].at) {
+      const hit = ch.kPending.shift()!;
+      ch.kLevel = Math.min(K.levelCap, ch.kLevel + hit.lv);
       ch.kLastChange = this.time;
     }
-    if (ch.kPending.length === 0 && ch.kLevel > 0 && this.time - ch.kLastChange >= K.decayEvery) {
-      ch.kLevel--;
+    if (
+      ch.kPending.length === 0 &&
+      ch.kLevel > 0 &&
+      this.time - ch.kLastChange >= K.decayEvery * K.decayStep
+    ) {
+      ch.kLevel = Math.max(0, ch.kLevel - K.decayStep);
       ch.kLastChange = this.time;
     }
     const de = ch.kLevel - ch.kFelt;
     const stepMax = K.easeRate * dt;
     ch.kFelt += Math.abs(de) < stepMax ? de : Math.sign(de) * stepMax;
-    // the k-hole: you're simply GONE until you surface back to level 4
+    // the k-hole: you're simply GONE until you surface back below 5
     if (ch.kLevel >= K.maxLevel && ch.state !== 1) this.knockDown(ch);
+  }
+
+  /** in the dancing crowd — near the pack's LIVE center, not a painted circle */
+  private onDanceFloor(ch: Character): boolean {
+    const p = ch.pos();
+    return (
+      Math.hypot(p.x - this.packCenter.x, p.z - this.packCenter.z) <
+      CONFIG.curator.danceHideRadius
+    );
+  }
+
+  /** zero boogie (b17): you weren't here to party, and the night lets you
+   *  go. Same door as an ejection, different shame. */
+  private boogieOut(ch: Character): void {
+    this.releaseGrip(ch);
+    for (const it of [...ch.slots]) if (it) this.releaseItem(ch, it, 0, null);
+    for (const other of this.allChars()) {
+      if (other.grip?.body === ch.body) this.releaseGrip(other);
+    }
+    ch.out = true;
+    ch.outWhy = 1;
+    ch.heat = 0;
+    const E = CONFIG.room.exit;
+    ch.body.setTranslation({ x: E.x, y: 1.0, z: 6.55 }, true);
+    ch.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
+    this.emit({ t: 'eject', x: E.x, y: 1, z: E.z });
   }
 
   /** PD spring toward world-up + lean into acceleration + idle sway. */
@@ -1044,7 +1178,9 @@ export class Sim {
     // EVERY entity loses its grip when it falls (John) — this is the rescue:
     // floor the minion dragging your friend and the grip is gone
     this.releaseGrip(ch);
-    if (ch.holding) this.releaseItem(ch, 0, null);
+    if (ch.holding) this.releaseItem(ch, ch.holding, 0, null);
+    // going down mid-ritual spills the whole phone (b17) — pockets survive
+    ch.phoneG = 0;
     if (ch.checkedBy && this.time - ch.checkedAt < 1.5 && this.phase === 0) {
       if (ch.isMinion) {
         // flooring one of the Curator's own = grounds for expulsion, no
@@ -1070,7 +1206,18 @@ export class Sim {
   private isGrounded(ch: Character): boolean {
     const p = ch.pos();
     const ray = new RAPIER.Ray({ x: p.x, y: p.y, z: p.z }, { x: 0, y: -1, z: 0 });
-    const hit = this.world.castRay(ray, ch.cfg.halfHeight + ch.cfg.radius + 0.12, true, undefined, undefined, undefined, ch.body);
+    // EXCLUDE_SENSORS everywhere a ray means "solid": carried items are
+    // sensors riding the body (pocketed ones sit AT the chest since b17) and
+    // must never count as ground, grabbable surface, or a line-of-sight block
+    const hit = this.world.castRay(
+      ray,
+      ch.cfg.halfHeight + ch.cfg.radius + 0.12,
+      true,
+      RAPIER.QueryFilterFlags.EXCLUDE_SENSORS,
+      undefined,
+      undefined,
+      ch.body,
+    );
     return hit !== null;
   }
 
@@ -1085,21 +1232,22 @@ export class Sim {
       input.facePitch,
       this.snapItems(),
       ch.pid,
-      !!ch.holding,
+      ch.slots.every((s) => s !== null), // pockets full = nothing to pick with
     );
   }
 
   private pickupItem(ch: Character, it: Item): void {
     if (it.holder) {
-      // straight out of their hand — mid-bump included
-      it.holder.holding = null;
-      it.holder.dosing = false;
-      it.holder.useT = 0;
+      // straight out of their HAND — pocketed items were filtered out
+      const si = it.holder.slots.indexOf(it);
+      if (si >= 0) it.holder.slots[si] = null;
     }
     it.holder = ch;
     it.holderId = ch.pid || null;
     it.thrownBy = null;
-    ch.holding = it;
+    // into the selected slot if it's free, else the first free pocket
+    const free = ch.slots[ch.selSlot] === null ? ch.selSlot : ch.slots.indexOf(null);
+    ch.slots[free === -1 ? ch.selSlot : free] = it;
     it.body.setBodyType(RAPIER.RigidBodyType.KinematicPositionBased, true);
     it.collider.setSensor(true);
     this.emit({ t: 'pickup', ...vec(it.body.translation()) });
@@ -1107,14 +1255,13 @@ export class Sim {
 
   private releaseItem(
     ch: Character,
+    it: Item,
     speed: number,
     input: PlayerInput | null,
     isThrow = false,
   ): void {
-    const it = ch.holding;
-    if (!it) return;
-    ch.holding = null;
-    ch.dosing = false;
+    const si = ch.slots.indexOf(it);
+    if (si >= 0) ch.slots[si] = null;
     it.holder = null;
     it.holderId = null;
     it.body.setBodyType(RAPIER.RigidBodyType.Dynamic, true);
@@ -1146,15 +1293,12 @@ export class Sim {
     it.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
   }
 
-  /** where a held item sits: out in front of the chest, travelling smoothly
-   *  up to the face and back down over the bump animation */
+  /** where the in-hand item sits: out in front of the chest — travelling up
+   *  to the face while the bill is actually hoovering a line (the one gesture
+   *  spectators must be able to read, John) */
   private handWorld(ch: Character): { x: number; y: number; z: number } {
     const I = CONFIG.items;
-    let f = 0; // 0 = carry position, 1 = at the face
-    if (ch.dosing) {
-      const KT = CONFIG.ketamine;
-      f = Math.min(1, ch.useT / KT.doseRaiseTime, Math.max(0, (KT.doseAnimTime - ch.useT) / KT.doseRaiseTime));
-    }
+    const f = ch.snortF; // 0 = carry position, 1 = at the face
     const local = {
       x: I.holdLocal.x + (I.doseLocal.x - I.holdLocal.x) * f,
       y: I.holdLocal.y + (I.doseLocal.y - I.holdLocal.y) * f,
@@ -1165,12 +1309,29 @@ export class Sim {
     return { x: p.x + o.x, y: p.y + o.y, z: p.z + o.z };
   }
 
+  /** which carried item is IN the hand right now: mid-ritual it's the
+   *  phase's tool (bag → card → bill — spectators watch you switch), any
+   *  other time the selected slot */
+  private visibleItemFor(ch: Character): Item | null {
+    if (ch.cutPhase > 0) {
+      const kind = (ch.cutPhase - 1) as ItemKind; // phase 1→bag · 2→card · 3→bill
+      return ch.slots.find((s) => s !== null && s.kind === kind) ?? null;
+    }
+    return ch.holding;
+  }
+
   /** held items ride the holder's hand as kinematic bodies — pocket-size
-   *  things don't need (or want) the full ragdoll treatment while carried */
+   *  things don't need (or want) the full ragdoll treatment while carried.
+   *  Pocketed (stowed) items ride invisibly at the chest. */
   private updateHeldItems(): void {
     for (const it of this.items) {
       if (!it.holder) continue;
-      it.body.setNextKinematicTranslation(this.handWorld(it.holder));
+      if (this.visibleItemFor(it.holder) === it) {
+        it.body.setNextKinematicTranslation(this.handWorld(it.holder));
+      } else {
+        const p = it.holder.pos();
+        it.body.setNextKinematicTranslation({ x: p.x, y: p.y + 0.1, z: p.z });
+      }
       it.body.setNextKinematicRotation(it.holder.body.rotation());
     }
   }
@@ -1193,7 +1354,7 @@ export class Sim {
       ray,
       CONFIG.grab.reach,
       true,
-      undefined,
+      RAPIER.QueryFilterFlags.EXCLUDE_SENSORS, // pocketed items are not handles
       undefined,
       undefined,
       ch.body,
@@ -1344,6 +1505,10 @@ export class Sim {
             npc.hopCd = CONFIG.body.hopCooldown * 2;
           }
         }
+      } else if (isDancer && npc.walkerMode === 6) {
+        // a dancer off to TELL ON someone (b17 dancefloor tattle) runs the
+        // same alert machine the walkers use, then drifts back to the pack
+        this.walkerBrain(npc, input, p, dt);
       } else if (isDancer) {
         // GENUINE full-body hop on their beat slot (grounded only, so energy
         // can't stack) + a small shuffle. They dance in place, in the pack.
@@ -1371,11 +1536,113 @@ export class Sim {
         }
       } else if (npc.isMinion) {
         this.minionBrain(npc, input, p, dt);
+        // patrol and raver-escort keep OFF the dancefloor (b17); an active
+        // hunt/shoo/removal (2/3/4) follows you anywhere — into the crowd too
+        if (npc.minionMode < 2 || npc.minionMode === 5) this.avoidDanceZone(npc, input);
       } else {
         this.walkerBrain(npc, input, p, dt);
+        // walkers never have ordinary business on the floor — the exception
+        // is a tattling dancer leading a bouncer back to a dancefloor incident
+        if (!(npc.walkerMode === 6 && npc.alertProblem === 1)) {
+          this.avoidDanceZone(npc, input);
+        }
       }
     }
     this.updateCharacter(npc, input, dt);
+  }
+
+  /** steer a heading AROUND the dancefloor circle (b17, John: "the dancefloor
+   *  is just for people to dance" — crossing it is never part of ordinary
+   *  walking). Same blend trick as the line-avoid: a radial push plus a
+   *  tangential slide, applied on top of whatever the brain already wants.
+   *  Soft on purpose — someone shoved INTO the pack still walks out. */
+  private avoidDanceZone(npc: Character, input: PlayerInput): void {
+    const m = Math.hypot(input.moveX, input.moveZ);
+    if (m < 0.05) return;
+    const Z = CONFIG.crowd.danceZone;
+    const R = Z.r + CONFIG.crowd.danceAvoidPad;
+    const p = npc.pos();
+    const dx = p.x - Z.x;
+    const dz = p.z - Z.z;
+    const d = Math.hypot(dx, dz) || 1e-4;
+    const mx = input.moveX / m;
+    const mz = input.moveZ / m;
+    if (d < R) {
+      // already inside (shoved, spawned scattered): angle OUT while walking
+      const ox = mx * 0.4 + dx / d;
+      const oz = mz * 0.4 + dz / d;
+      const ol = Math.hypot(ox, oz) || 1;
+      input.moveX = (ox / ol) * m;
+      input.moveZ = (oz / ol) * m;
+      return;
+    }
+    const toward = -(dx * mx + dz * mz); // >0 = heading at the pack
+    if (toward <= 0 || toward > 6) return; // walking away, or still far off
+    // closest the straight path would come to the center
+    const cx = dx + mx * toward;
+    const cz = dz + mz * toward;
+    const cd = Math.hypot(cx, cz);
+    if (cd >= R) return; // clean miss
+    const w = (R - cd) / R;
+    // slide along whichever tangent already agrees with the heading
+    let tx = -dz / d;
+    let tz = dx / d;
+    if (tx * mx + tz * mz < 0) {
+      tx = -tx;
+      tz = -tz;
+    }
+    const ox = mx + (tx * 1.4 + (dx / d) * 0.4) * w;
+    const oz = mz + (tz * 1.4 + (dz / d) * 0.4) * w;
+    const ol = Math.hypot(ox, oz) || 1;
+    input.moveX = (ox / ol) * m;
+    input.moveZ = (oz / ol) * m;
+  }
+
+  /** cutting lines ON the dancefloor is a faux pas the RAVERS enforce (b17,
+   *  John): a nearby dancer turns and stares, angry brows out — put it away
+   *  within cutting.tattleAfter or they leave the pack to fetch a bouncer
+   *  (the same alert machine the stall uses, problem type 1). Off the floor
+   *  partygoers don't care; only bouncer eyes matter there. */
+  private updateTattling(dt: number): void {
+    if (this.phase === 1) return;
+    const CT = CONFIG.cutting;
+    const offenders: Character[] = [];
+    for (const p of this.players.values()) {
+      if (!p.out && p.cutPhase > 0 && this.onDanceFloor(p)) offenders.push(p);
+    }
+    const dancerCount = Math.min(CONFIG.crowd.dancers, this.npcs.length);
+    for (let i = 0; i < dancerCount; i++) {
+      const d = this.npcs[i];
+      if (!d.isDancer || d.state !== 0 || d.walkerMode !== 0) continue;
+      const dp = d.pos();
+      let seen: Character | null = null;
+      let bd = Infinity;
+      for (const off of offenders) {
+        const op = off.pos();
+        const dist = Math.hypot(op.x - dp.x, op.z - dp.z);
+        if (dist < CT.noticeRadius && dist < bd) {
+          bd = dist;
+          seen = off;
+        }
+      }
+      if (seen) {
+        const op = seen.pos();
+        d.annoyT += dt;
+        d.stareYaw = Math.atan2(op.x - dp.x, op.z - dp.z);
+        if (d.annoyT >= CT.tattleAfter) {
+          d.annoyT = 0;
+          d.stareYaw = null;
+          d.alertTarget = seen;
+          d.alertProblem = 1;
+          d.alertSpot = { x: op.x, z: op.z };
+          d.alertPhase = 1;
+          this.setWalkerMode(d, 6);
+        }
+      } else if (d.annoyT > 0) {
+        d.annoyT = Math.max(0, d.annoyT - dt * 1.5);
+        if (d.annoyT === 0) d.stareYaw = null;
+      }
+    }
   }
 
   /** walk to the current roam destination; arriving (or getting stuck)
@@ -1563,7 +1830,18 @@ export class Sim {
         // the door like a person in a queue does
         const idx = this.queue.indexOf(npc);
         if (idx === -1) {
-          this.setWalkerMode(npc, 0);
+          // APPROACHING (b17, John: "I was here first"): a place in line is
+          // EARNED by arriving at the tail, never reserved from across the
+          // room. Walk to the current back slot; if someone (a player, a
+          // faster walker) takes it first, the tail moves and you aim at the
+          // slot behind them — exactly the "then they'll go behind you" rule.
+          if (this.queue.length >= B.queueSlots || npc.modeT > 45) {
+            this.setWalkerMode(npc, 0);
+            break;
+          }
+          const tail = this.slotPos(this.queue.length);
+          const dTail = this.seekInput(input, p, tail.x, tail.z, 0.85, 0.3);
+          if (dTail < B.joinRadius) this.queue.push(npc);
           break;
         }
         const slot = this.slotPos(idx);
@@ -1618,6 +1896,7 @@ export class Sim {
           if (npc.annoyT >= B.annoyAt) {
             npc.annoyT = 0;
             npc.alertTarget = intruder;
+            npc.alertProblem = 0; // problem type: hogging the bathroom
             npc.alertPhase = 1;
             this.setWalkerMode(npc, 6);
             break;
@@ -1669,6 +1948,7 @@ export class Sim {
         const giveUpAlert = () => {
           npc.alertPhase = 0;
           npc.alertTarget = null;
+          npc.alertSpot = null;
           this.setWalkerMode(npc, 0);
         };
         if (this.phase === 1 || npc.modeT > B.fetchGiveUp) {
@@ -1707,13 +1987,34 @@ export class Sim {
             npc.alertPhase = 1; // lost my bouncer (floored, poached) — find another
             break;
           }
-          const spot = B.outsidePoint;
+          // where the incident was: the stall door, or wherever on the
+          // dancefloor someone was cutting lines (problem type 1, b17)
+          const spot = npc.alertProblem === 1 && npc.alertSpot ? npc.alertSpot : B.outsidePoint;
           const d = this.routeTo(input, p, spot.x, spot.z, 0.9, 0.35);
           const ep = escort.pos();
           if (d < 1.0 && Math.hypot(ep.x - p.x, ep.z - p.z) < 2.6) {
-            // HANDOFF: the bouncer resolves whoever is in there NOW — if the
-            // stall emptied on the walk over, the problem no longer exists
+            // HANDOFF: the bouncer resolves what's true NOW — if the problem
+            // evaporated on the walk over, it shrugs back to patrol
             escort.followRaver = null;
+            if (npc.alertProblem === 1) {
+              // dancefloor tattle: still mid-ritual → straight to the walk
+              // of shame. Packed it away in time → nothing sticks.
+              const t = npc.alertTarget;
+              if (t && !t.out && t.cutPhase > 0) {
+                t.heat = Math.max(t.heat, CONFIG.curator.ejectAt);
+                escort.minionMode = 2;
+                escort.huntTarget = t;
+                escort.losLostT = 0;
+              } else {
+                escort.minionMode = 0;
+                escort.scanT = randRange(...CONFIG.curator.scanEvery);
+              }
+              npc.alertPhase = 0;
+              npc.alertTarget = null;
+              npc.alertSpot = null;
+              this.setWalkerMode(npc, 0); // dancers drift back into the pack
+              break;
+            }
             let occ: Character | null = null;
             for (const ch of this.allChars()) {
               if (!ch.out && ch !== escort && this.inStall(ch.pos())) {
@@ -1777,7 +2078,7 @@ export class Sim {
       new RAPIER.Ray(origin, { x: vx / len, y: vy / len, z: vz / len }),
       len + 0.1,
       true,
-      undefined,
+      RAPIER.QueryFilterFlags.EXCLUDE_SENSORS, // a pocketed card is not a wall
       undefined,
       undefined,
       a.body,
@@ -1850,7 +2151,7 @@ export class Sim {
           npc.minionMode === 2
             ? { x: CONFIG.room.exit.x, z: CONFIG.room.exit.z - 0.35 }
             : npc.minionMode === 3
-              ? { x: 0, z: -2.2 } // off the stand, onto the floor
+              ? CU.shooDropSpot // off the stand AND off the dancefloor (b17)
               : CONFIG.bathroom.dragOutPoint;
         this.routeTo(input, p, dest.x, dest.z, CU.dragSpeed / C.moveSpeed, 0.25);
         chaseHop();
@@ -1858,7 +2159,12 @@ export class Sim {
           const E = CONFIG.room.exit;
           if (Math.hypot(tp.x - E.x, tp.z - E.z) < CU.ejectDist) this.ejectPlayer(t, npc);
         } else if (npc.minionMode === 3) {
-          if (!this.onBooth(t) && tp.y < 0.6) {
+          // let go the MOMENT you're out of the restricted area at floor
+          // height and start cooling off (b17, John: "they continue to hold
+          // onto you and just... never let go"). The old 0.6 threshold sat
+          // BELOW an upright capsule's center (0.78), so for anyone still on
+          // their feet the release condition simply never came true.
+          if (!this.onBooth(t) && tp.y < 1.05) {
             this.releaseGrip(npc);
             giveUp();
           }
@@ -1990,8 +2296,10 @@ export class Sim {
     );
     if (candidates.length === 0) return;
     const pick = candidates[Math.floor(Math.random() * candidates.length)];
-    this.queue.push(pick);
-    pick.walkerMode = 1;
+    // tapped, not teleported into the line: they WALK to the back and join
+    // on arrival like anybody else (b17 — reserving a slot from across the
+    // room is how players kept getting "cut" at the tail)
+    this.setWalkerMode(pick, 1);
   }
 
   /** STALL PRESSURE (John): there's no lock, so camping the stall is a legal
@@ -2081,6 +2389,7 @@ export class Sim {
       if (barger && this.pressureT < B.minionAt + B.minionEvery) {
         if (barger.grip) this.releaseGrip(barger);
         barger.alertTarget = occ;
+        barger.alertProblem = 0;
         barger.alertPhase = 1;
         this.setWalkerMode(barger, 6);
       } else {
@@ -2140,7 +2449,7 @@ export class Sim {
       new RAPIER.Ray(origin, { x: vx / len, y: vy / len, z: vz / len }),
       len + 0.1,
       true,
-      undefined,
+      RAPIER.QueryFilterFlags.EXCLUDE_SENSORS, // your own pocketed kit is not cover
       undefined,
       undefined,
       m.body,
@@ -2203,14 +2512,23 @@ export class Sim {
           watchNow.set(p, Math.max(watchNow.get(p)!, gaze));
           // are they DOING something? heat only accumulates for behavior.
           let rate = 0;
-          if (p.dosing) rate = CU.heatDosing;
+          if (p.cutPhase > 0) rate = CU.heatDosing; // the whole ritual reads as dosing
           else if (
             p.state === 1 &&
             (p.kLevel >= CONFIG.ketamine.maxLevel || p.staminaDown || p.stateT > 4)
           )
             rate = CU.heatDown;
           else if (this.onBooth(p)) rate = CU.heatBooth; // the stand is off limits
-          else if (p.state === 0 && p.kFelt >= CU.wreckedAt) rate = CU.heatWrecked;
+          else if (p.state === 0 && p.kFelt >= CU.wreckedAt) {
+            // being wrecked reads off your MOTION (b17, John): stumbling
+            // around is the giveaway, standing still barely registers — and
+            // dancing in the pack registers not at all (everyone dances weird)
+            if (p.dancingNow && this.onDanceFloor(p)) rate = 0;
+            else {
+              const pv = p.body.linvel();
+              rate = Math.hypot(pv.x, pv.z) > 0.35 ? CU.heatWrecked : CU.heatWreckedStill;
+            }
+          }
           // gradual redness: an idle glance is faint; eyes on someone whose
           // suspicion is climbing glow harder and harder
           const heatFrac = Math.min(1, p.heat / CU.ejectAt);
@@ -2331,8 +2649,9 @@ export class Sim {
 
   private ejectPlayer(p: Character, m: Character): void {
     this.releaseGrip(m);
-    if (p.holding) this.releaseItem(p, 0, null);
+    for (const it of [...p.slots]) if (it) this.releaseItem(p, it, 0, null);
     p.out = true;
+    p.outWhy = 0;
     p.heat = 0;
     const E = CONFIG.room.exit;
     p.body.setTranslation({ x: E.x, y: 1.0, z: 6.55 }, true);
@@ -2442,7 +2761,9 @@ export class Sim {
         pos: { x: p.x, y: p.y, z: p.z },
         rot: { x: r.x, y: r.y, z: r.z, w: r.w },
         holder,
-        doses: it.doses,
+        grams: it.grams,
+        stowed: it.holder !== null && this.visibleItemFor(it.holder) !== it,
+        slot: it.holder ? Math.max(0, it.holder.slots.indexOf(it)) : 0,
       };
     });
   }
@@ -2457,17 +2778,20 @@ export class Sim {
       vel: { x: v.x, y: v.y, z: v.z },
       st: ch.state,
       gripPoint: this.gripAnchorWorld(ch),
-      act: ch.dosing
-        ? 1
-        : ch.knockAnimT > 0
-          ? 5
-          : ch.wantGrab && !ch.grip
-            ? 3
-            : ch.staggerT > 0
-              ? 2
-              : ch.dancingNow
-                ? 4
-                : 0,
+      act:
+        ch.snorting || ch.snortF > 0.3
+          ? 1
+          : ch.cutPhase > 0
+            ? 6
+            : ch.knockAnimT > 0
+              ? 5
+              : ch.wantGrab && !ch.grip
+                ? 3
+                : ch.staggerT > 0
+                  ? 2
+                  : ch.dancingNow
+                    ? 4
+                    : 0,
       asleep: ch.staminaDown,
       // pissed off (angry-brows tell, John): a minion on the job or still
       // hot with aggro, a walker barging/alerting, an annoyed stall occupant
@@ -2481,8 +2805,10 @@ export class Sim {
           ch.knockAnimT > 0,
       k: ch.kFelt,
       stam: ch.isPlayer ? ch.stamina : 1,
+      boogie: ch.isPlayer ? ch.boogie : 1,
       watch: ch.watchSignal,
       out: ch.out,
+      outWhy: ch.outWhy,
     };
   }
 

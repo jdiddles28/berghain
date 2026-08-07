@@ -24,6 +24,13 @@ disagree, one of them is a bug.
 
 1. **Join at the back or not at all.** A player joins by standing at the TAIL slot
    (within `joinRadius`). Standing beside the middle of the line does nothing.
+   **A spot is EARNED by arriving, never reserved (b17).** NPCs used to claim a
+   queue index the moment they decided to go — from across the room — so a player
+   walking to the tail kept getting "cut" by someone who wasn't even there yet
+   (John: "hello I was here first"). Now a tapped walker WALKS to the current tail
+   slot and joins on arrival under the same joinRadius rule as players. If the
+   tail is taken while they're en route, the tail slot moves back one and so do
+   they — exactly "if your spot gets taken first, then they'll go behind you."
 2. **Hold your spot.** Everyone in line targets their own slot; when the line advances,
    you shuffle forward one slot. Wander more than `leaveDist` from your slot → you're out
    of the line and the people behind you move up. (NPCs that get shoved stumble back to

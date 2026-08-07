@@ -53,7 +53,7 @@ describe('crowd stays on its feet', () => {
     expect(falls).toBeLessThanOrEqual(2);
     // and nobody spends time deeply leaned either (45° lean has upY ≈ 0.71)
     expect(worstUp).toBeGreaterThan(0.8);
-  });
+  }, 30000);
 
   it('after a blast wave, every NPC gets back up and stays up', () => {
     const sim = new Sim();

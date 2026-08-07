@@ -44,6 +44,9 @@ export class ClientSession implements Session {
   // was pushing 144 packets/s through the relay for no gameplay benefit
   private lastInputSend = 0;
   private hopLatch = false;
+  // grams buffer between throttled sends and flush in one packet (b17)
+  private pourAcc = 0;
+  private snortAcc = 0;
   // latency probe: ping every couple of seconds, show the RTT in the HUD so
   // "it's super laggy" comes with a number attached next time
   private lastPingAt = 0;
@@ -171,6 +174,8 @@ export class ClientSession implements Session {
   frame(_frameDt: number, localInput: PlayerInput): void {
     if (!this.fast?.open) return;
     this.hopLatch ||= localInput.hop; // edge-triggers survive the throttle
+    this.pourAcc += localInput.pour; // quantities survive it too (b17)
+    this.snortAcc += localInput.snort;
     const now = performance.now();
     if (now - this.lastInputSend >= 33) {
       this.lastInputSend = now;
@@ -186,8 +191,14 @@ export class ClientSession implements Session {
         u: localInput.use ? 1 : 0,
         d: localInput.drop ? 1 : 0,
         dn: localInput.dance ? 1 : 0,
+        sl: localInput.slot,
+        cp: localInput.cutPhase,
+        pr: Math.round(this.pourAcc * 1e5) / 1e5,
+        sn: Math.round(this.snortAcc * 1e5) / 1e5,
       } satisfies FastMsg);
       this.hopLatch = false;
+      this.pourAcc = 0;
+      this.snortAcc = 0;
     }
     if (now - this.lastPingAt >= 2000) {
       this.lastPingAt = now;

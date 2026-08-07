@@ -25,9 +25,20 @@ export interface PlayerInput {
   sprint: boolean; // held (Shift)
   hop: boolean; // edge-triggered (latched by host)
   grab: boolean; // held (RMB) — items first, then the universal body-grab
-  use: boolean; // held (LMB) — using what's in your hand (bumping the bag)
+  use: boolean; // held (LMB) — using what's in your hand (phase 3: the bill hoovers)
   drop: boolean; // held (Q) — tap: drop. hold: charge a throw, release to loose it
   dance: boolean; // E held — the sim TOGGLES the dance state on the press edge
+  /** selected inventory slot 0-2 (mouse wheel, b17) */
+  slot: number;
+  /** where the client says it is in the cutting ritual (0 = not cutting).
+   *  The host VALIDATES: each phase needs the right item in your pockets. */
+  cutPhase: 0 | 1 | 2 | 3;
+  /** grams poured out of the bag onto the phone since the last input packet
+   *  (client-side powder sim reports; host clamps to what the bag holds) */
+  pour: number;
+  /** grams committed by a finished snort stroke (host clamps to the phone,
+   *  then rounds the DOSE to the secret 0.025 g bucket) */
+  snort: number;
 }
 
 export const ZERO_INPUT: PlayerInput = {
@@ -41,6 +52,10 @@ export const ZERO_INPUT: PlayerInput = {
   use: false,
   drop: false,
   dance: false,
+  slot: 0,
+  cutPhase: 0,
+  pour: 0,
+  snort: 0,
 };
 
 // 0 upright · 1 down (ragdolled) · 2 getting up
@@ -53,9 +68,10 @@ export interface BodySnap {
   st: BodyState;
   /** world point this body's hands are gripping (any solid), or null */
   gripPoint: Vec3 | null;
-  /** action flag for the view: 0 none · 1 dosing (bag to face) · 2 staggered ·
-   *  3 reaching (grab attempt) · 4 dancing (beat bounce) · 5 knocking on the door */
-  act: 0 | 1 | 2 | 3 | 4 | 5;
+  /** action flag for the view: 0 none · 1 snorting (hand to face) · 2 staggered ·
+   *  3 reaching (grab attempt) · 4 dancing (beat bounce) · 5 knocking on the
+   *  door · 6 mid-cutting-ritual (phone out flat, other hand working over it) */
+  act: 0 | 1 | 2 | 3 | 4 | 5 | 6;
   /** stamina hit empty — asleep on the floor (fetal curl, not a ragdoll flop) */
   asleep: boolean;
   /** this body is PISSED OFF (barging the stall, knocking, hunting you) —
@@ -65,13 +81,17 @@ export interface BodySnap {
   k: number;
   /** stamina 0..1 (players; 1 for NPCs) — THE bar */
   stam: number;
+  /** boogie 0..1 (players; 1 for NPCs) — the bar only dancing refills (b17) */
+  boogie: number;
   /** how hard the Curator's minions are watching this body right now, 0..1 */
   watch: number;
   /** ejected from the club — out of the game */
   out: boolean;
+  /** why they're out: 0 = escorted by the Curator · 1 = boogie hit zero */
+  outWhy: 0 | 1;
 }
 
-export type ItemKind = 0; // 0 = bag of K (more later)
+export type ItemKind = 0 | 1 | 2; // 0 = bag of K · 1 = credit card · 2 = rolled bill
 
 export interface ItemSnap {
   kind: ItemKind;
@@ -79,8 +99,13 @@ export interface ItemSnap {
   rot: Quat;
   /** player id holding it, or null when loose in the world */
   holder: string | null;
-  /** for the K bag: bumps left */
-  doses: number;
+  /** for the K bag: grams left (the fill level you can SEE — never a number
+   *  in the HUD, John: how full the bag is stays felt knowledge) */
+  grams: number;
+  /** carried but pocketed (not the selected slot) — invisible, unstealable */
+  stowed: boolean;
+  /** which inventory slot it rides in (0-2) while held */
+  slot: number;
 }
 
 export interface SimSnapshot {
@@ -152,6 +177,7 @@ export function targetItemIndex(
   for (let i = 0; i < items.length; i++) {
     const it = items[i];
     if (it.holder === selfId) continue;
+    if (it.holder && it.stowed) continue; // pocketed items can't be snatched
     const range = it.holder ? CONFIG.items.stealRange : CONFIG.items.pickupRange;
     const dx = it.pos.x - eye.x;
     const dy = it.pos.y - eye.y;
@@ -181,7 +207,9 @@ export function lerpSnapshot(a: SimSnapshot, b: SimSnapshot, t: number): RenderF
       pos: lerpV(ia.pos, ib.pos, t),
       rot: slerp(ia.rot, ib.rot, t),
       holder: ib.holder,
-      doses: ib.doses,
+      grams: ib.grams,
+      stowed: ib.stowed,
+      slot: ib.slot,
     };
   });
   return {
@@ -208,8 +236,10 @@ function lerpBody(a: BodySnap, b: BodySnap, t: number): BodySnap {
     angry: b.angry,
     k: a.k + (b.k - a.k) * t,
     stam: a.stam + (b.stam - a.stam) * t,
+    boogie: a.boogie + (b.boogie - a.boogie) * t,
     watch: a.watch + (b.watch - a.watch) * t,
     out: b.out,
+    outWhy: b.outWhy,
   };
 }
 

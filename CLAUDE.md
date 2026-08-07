@@ -110,13 +110,58 @@ V toggles the voice-chat mic mute. E = dance TOGGLE (b15): a beat-locked side-to
 step with big alternating overhead arm pumps — deliberately unlike the crowd's vertical
 every-2-beats bounce so you can pick yourself out mid-pack. Moving/hopping/grabbing/dosing
 cancels it. Still no gameplay purpose by design.
-RMB = grab: items first (Peak-style look-highlight pickup, incl. snatching from hands),
-else the universal body/wall grip (soft spring, no joints). LMB = USE what's held (hold to
-bump from the K bag). Q = tap to drop, hold to charge a throw. No shove — John cut it (b10);
+RMB = grab: items first (Peak-style look-highlight pickup, incl. snatching the item in a
+HAND — pockets are safe), else the universal body/wall grip (soft spring, no joints).
+Mouse WHEEL cycles the 3 inventory slots (b17). LMB = use: HOLD on the bag to open the
+cutting ritual (see b17); tap on the bill to sniff (air, outside the ritual). Q = tap to
+drop, hold to charge a throw — selected item only. No shove — John cut it (b10);
 sprint body checks are the violence now. John ruled grab stays on RMB ("left click seems so
 select focused, the action to grab should feel more intentional").
 
-## b16 additions (the current build)
+## b17 additions (the current build)
+
+- **The line-cutting ritual** (John's minigame — dosing is now a PROCESS, ~a minute):
+  hold LMB on the bag → FP cutting view (phone in left hand, mouse = right hand). Phase 1
+  shake gently to pour; click → card, plow powder into lines; click → bill, hold LMB and
+  drag along a line to hoover it; RMB = panic put-away. Client owns the FEEL
+  (`src/cutting.ts`: 2D height-grid drawn to a canvas texture under 3D props — the
+  "videogame trickery"); the HOST owns every gram (`sim.updateCutting` clamps pour vs the
+  bag, snort vs the phone, and validates the phase against inventory — no card in
+  anyone's pockets means no phase 2, so borrowing a friend's card is emergent content).
+  Knockdown SPILLS the phone (`phoneG = 0`). Spectators read it: act 6 = phone out flat +
+  tool working over it, act 1 = the sniff (hand to face, unmistakable — John).
+- **Dosing in grams + secret buckets**: bags hold 1 g. A snorted stroke rounds to the
+  nearest 0.025 g bucket = half an internal level (k-hole still = 5.0 internal at 0.25 g;
+  John counts levels ×2, "khole at level 10"). Overdose stacks past the hole to
+  `levelCap` 10 (0.5 g = John's "level 20") and decays in half-steps — take double, wait
+  double. Old one-press bump flow is GONE.
+- **Inventory** (Peak-style): 3 slots, wheel selects, selected item rides the right hand,
+  others are pocketed (invisible, unstealable, and EXCLUDE_SENSORS keeps them out of
+  every LOS/grab/ground raycast — pocketed kit at chest height was blocking minionSees).
+  Players spawn slot-2 card + slot-3 bill; slot 1 empty for a bag. Card/bill are real
+  droppable/throwable items. Bag is a ziplock BAGGY: fill level visibly = grams left,
+  never a number (John: not player knowledge).
+- **The boogie meter** (experiment John ordered): second bar, only dancing fills it
+  (~1 min on the floor; off-floor at 0.4×), drains ~3 min full-to-empty whenever not
+  dancing (k-holes included), zero = BOOGIED OUT (out, `outWhy 1`, own end screen).
+  Dancing drains stamina ×`danceDrainMult` — and since K's drain-slow multiplies in
+  first, dancing on K is cheaper than sober. That trade IS the loop.
+- **Detection**: the whole ritual reads as dosing to bouncer eyes (`heatDosing`). ON the
+  dancefloor RAVERS enforce it instead: a dancer within `cutting.noticeRadius` stares
+  (angry brows), and after `tattleAfter` (15 s) runs the b15 alert machine with
+  `alertProblem = 1` — bouncer arrives, still cutting → straight to the walk of shame;
+  packed away in time → shrug. Wrecked-heat now splits: MOVING while high = full rate,
+  standing still = `heatWreckedStill`, dancing in the pack = zero (dancing hides you).
+- **b17 fixes**: booth-shoo releases the drag the moment you're off the stand at floor
+  height (old `y < 0.6` was below an upright capsule's center — the grip literally never
+  let go) and dumps you at `shooDropSpot`, off the dancefloor. Queue spots are EARNED at
+  the tail: scheduler-tapped walkers walk to the current tail slot and join on arrival
+  (same joinRadius as players) — whoever gets there first is ahead. End screens are real
+  MENUS (pointer lock released, input muted, opaque). NPCs steer around the dancefloor
+  circle (`avoidDanceZone`) unless hunting someone inside it. K visuals: blur way down,
+  darkness up, real distance FOG closes in per level (`ketamine.fog`, view-side).
+
+## b16 additions
 
 - **Queue precision**: NPC queuers micro-shuffle onto their slot's EXACT center
   (proportional servo, 5 cm deadzone) — the old 0.35 m arrive-tolerance + glide read as

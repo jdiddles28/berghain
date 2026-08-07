@@ -108,8 +108,20 @@ export const CONFIG = {
     maxStart: 1.0,
     maxEnd: 0.34, // by noon the whole bar is a third of what you opened with
     sprintDrainMult: 3.5, // sprinting burns the bar — you can't run forever
-    danceDrainMult: 1.0, // (dancing economy is Build 3)
-    bumpRefill: 0.24, // one bump: fixed ABSOLUTE refill, clamped to the ceiling
+    // the dance economy (b17, John's experiment): dancing costs real energy —
+    // and because K's drain-slow applies to the whole drain, dancing ON k
+    // costs less than dancing sober. That trade IS the loop.
+    danceDrainMult: 2.6,
+    bumpRefill: 0.24, // 0.05 g snorted: fixed ABSOLUTE refill, clamped to the ceiling
+    // THE BOOGIE METER (b17, John): a second bar that only DANCING refills.
+    // Full-to-empty in ~3 min of standing around; empty-to-full in ~1 min of
+    // dancing on the floor. Zero boogie = you lose — you were not here to
+    // party, and the night moved on without you.
+    boogie: {
+      fill: 1 / 60, // fraction/s while dancing ON the dancefloor
+      fillOffFloor: 0.4, // × fill when dancing alone in a corner (it's sad)
+      drain: 1 / 180, // fraction/s while not dancing
+    },
     kDrainSlowPerLevel: 0.19, // the real late-game value of K: drain × (1 − this·felt)
     kDrainFloor: 0.2, // deep in it the body still burns a little
     collapseAt: 0.0, // bar empty → you fold up where you stand
@@ -142,10 +154,21 @@ export const CONFIG = {
     // heat: per-player suspicion 0..1. Only accumulates while a minion has
     // eyes on you DOING something ejectable; slowly forgotten otherwise
     // (John: suspicion rises AND falls gradually, never snaps back).
-    heatDosing: 0.4, // per s observed mid-bump
+    heatDosing: 0.4, // per s observed anywhere in the line-cutting ritual
     heatDown: 0.3, // per s observed collapsed/k-holed on the floor
-    heatWrecked: 0.22, // per s observed moving at kFelt ≥ wreckedAt
+    // being VISIBLY high (b17, John): trying to WALK while wrecked is the
+    // giveaway — standing still while wrecked draws far less attention, and
+    // dancing on the dancefloor draws none at all (everyone dances weird)
+    heatWrecked: 0.22, // per s observed MOVING at kFelt ≥ wreckedAt
+    heatWreckedStill: 0.05, // per s observed standing still at kFelt ≥ wreckedAt
     wreckedAt: 3.3,
+    // dancing in the pack hides your state entirely (John: "bouncers won't
+    // bat an eye, even if you're about to khole, bc you're dancing")
+    danceHideRadius: 3.4, // this close to the pack's live center counts as "in the crowd"
+    // where a booth-shoo dumps you: OFF the stand and OFF the dancefloor
+    // (the old spot was inside the dance zone — and the release condition
+    // could never fire for an upright body, so the drag never ended: b17 fix)
+    shooDropSpot: { x: 2.6, z: -0.2 },
     heatKnockdown: 0.55, // instantly, for flooring someone in view
     heatGrabbed: 0.3, // per s you HOLD a minion — they do not like being dragged
     heatThrowHit: 0.3, // instantly, for beaning a minion with a thrown object
@@ -319,22 +342,30 @@ export const CONFIG = {
     throwChargeMax: 1.0, // full windup
     throwSpeed: [5.5, 13] as const, // m/s at min..max charge
     throwUpBias: 0.2, // arc it a little
-    kbag: { w: 0.11, h: 0.05, d: 0.14, mass: 0.25 },
+    // the bag is a little ZIPLOCK BAGGY of white powder (John: the old one
+    // read as a cigarette pack) — flat pouch, fill level visible through it
+    kbag: { w: 0.085, h: 0.11, d: 0.02, mass: 0.03 },
+    card: { w: 0.086, h: 0.002, d: 0.054, mass: 0.01 }, // a credit card
+    bill: { r: 0.007, len: 0.072, mass: 0.005 }, // a rolled bill
   },
 
-  // the K economy, Build-2 scaffolding. One bag = 20 bumps. Effects arrive on
-  // a delay, stack per level, and ease in/out — no hard steps.
+  // the K economy, b17: GRAMS, not "bumps". A bag holds 1 g; you dose
+  // yourself by cutting lines (see `cutting`), and what you snorted rounds
+  // to a secret 0.025 g bucket — lines that LOOK slightly different can hit
+  // identically (John: part of the fun is not knowing exactly what you did).
+  // Internal level scale is unchanged (k-hole = 5.0) but levels now move in
+  // 0.5 steps: 0.025 g = half a level, 0.25 g = the hole. Overdose stacks
+  // PAST the hole (0.5 g = level 10 internally) and decays granularly — take
+  // double and you wait down through every extra step before you surface.
   ketamine: {
-    dosesPerBag: 20,
-    // a bump is a SET animation (John): press LMB → the bag comes up, you
-    // sniff, it comes back down. One bump per press — holding does nothing;
-    // release and press again for another.
-    doseAnimTime: 2.6, // s, committed once started
-    doseSniffAt: 0.55, // fraction through the animation when the sniff lands
-    doseRaiseTime: 0.7, // s for the bag to travel hand→face (and face→hand)
-    onsetDelay: 30, // s from the bump to the level actually hitting
-    decayEvery: 60, // s per level coming back down (TEST value — real game much longer)
-    maxLevel: 5, // hitting 5 = k-hole: full ragdoll until you decay back to 4
+    bagGrams: 1.0, // a full bag
+    bucketG: 0.025, // the secret dose quantum (half an internal level)
+    levelPerGram: 20, // 0.05 g = 1.0 internal level → 0.25 g = the k-hole
+    levelCap: 10, // 0.5 g at once is as gone as the sim will model
+    onsetDelay: 30, // s from the sniff to the level actually hitting
+    decayEvery: 60, // s per FULL level coming back down (stepped by decayStep)
+    decayStep: 0.5, // levels per decay tick — granular surfacing (b17)
+    maxLevel: 5, // reaching 5 = k-hole: full ragdoll until you decay below it
     easeRate: 0.5, // levels/s the FELT level eases toward the true level
     // movement, per felt-level (0..5):
     speedPenalty: 0.115, // speed × (1 − this·k) → ~54% at level 4
@@ -349,14 +380,45 @@ export const CONFIG = {
     // "wait, is the room moving?", 4 is a good bit (John's hallucination
     // staircase). The looks are real K phenomenology: motion trails/ghosting,
     // breathing walls, tunnel vision, washed-out color.
-    blurPerLevel: 0.75, // px (× the curved level)
-    darkenPerLevel: 0.06,
+    // b17 (John): "make the screen darker, and have the world get dark and
+    // foggy at a further distance... that's better than just pure blur. The
+    // blur is still good, its j that's all there is" — blur dialed way down,
+    // darkness up, and real DISTANCE FOG closes in per level (see view.ts).
+    blurPerLevel: 0.3, // px (× the curved level) — a hint, not the whole effect
+    darkenPerLevel: 0.11,
+    fog: { nearSober: 6, farSober: 26, nearHigh: 2.0, farHigh: 7.5 }, // lerped by the curved level
     viewSway: 0.013, // rad of slow camera sway per felt level
-    kholeBlur: 7, // px — the world smears out when you go down
+    kholeBlur: 4, // px — the world smears out when you go down
     trailFrom: 2.2, // felt level where motion trails (frame feedback) begin
     trailMax: 0.5, // fraction of the previous frame kept at level 5
     breatheFrom: 2.4, // the room starts gently swelling/shrinking
     vignetteFrom: 2.6, // tunnel vision creeps in
+  },
+
+  // THE LINE-CUTTING MINIGAME (b17, John): doing drugs is a PROCESS. Hold LMB
+  // on the bag → phone comes out (left hand), bag in the right; shake gently
+  // to pour onto the black screen; click → card, plow the powder into lines;
+  // click → rolled bill, hold LMB and drag along a line to hoover it up.
+  // RMB puts it all away fast (the panic button). The whole ritual runs about
+  // a minute — which is exactly why the bathroom matters.
+  // The powder is a 2D height-grid on the phone screen (client-side, drawn to
+  // a canvas texture under 3D props — the "videogame trickery"); the host
+  // stays authoritative over every gram via pour/snort amounts in the input.
+  cutting: {
+    grid: { w: 44, h: 24 }, // powder cells across the phone screen
+    screenW: 0.07, // m — the phone's glass, where everything happens
+    screenH: 0.15,
+    pourRate: 0.02, // g/s at full gentle shake (a 3-line pour ≈ 10-15 s)
+    pourMax: 0.35, // g the screen can sensibly hold — past this it's a mound
+    cardHalfLen: 0.24, // card edge half-length in screen-height units
+    cardPush: 0.85, // fraction of swept powder displaced per pass
+    snortRate: 0.03, // g/s the bill hoovers when held over powder
+    snortRadius: 0.09, // suction radius in screen-height units
+    holdToStart: 0.25, // s of LMB on the bag before the ritual opens
+    // detection: bouncers treat the WHOLE ritual like open dosing (curator.
+    // heatDosing). On the dancefloor the RAVERS care too (big faux pas):
+    noticeRadius: 3.0, // dancers this close clock what you're doing
+    tattleAfter: 15, // s of being watched mid-ritual before one fetches a bouncer
   },
 
   crowd: {
@@ -419,6 +481,11 @@ export const CONFIG = {
       lineAvoid: 1.3,
       stuckAfter: 2.5, // s of pushing without progress → pick a new spot
     },
+    // NOBODY walks through the dancefloor as part of ordinary life (b17,
+    // John): the floor is for dancing. Walkers and patrolling bouncers steer
+    // around the pack's circle; only a bouncer chasing someone who fled INTO
+    // the crowd follows them in.
+    danceAvoidPad: 0.5, // avoid radius = danceZone.r + this
     // soft anti-stack nudge ONLY at near-overlap. weight comes from real
     // capsule-vs-capsule contact — a big invisible push field made people
     // glide away before you touched them, which read as weightless.

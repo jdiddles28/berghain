@@ -275,6 +275,133 @@ describe('the night', () => {
     expect(p2.heat).toBeGreaterThanOrEqual(CONFIG.curator.ejectAt);
   }, 30000);
 
+  it('a booth-shoo lets GO the moment you are off the stand (b17)', () => {
+    const sim = new Sim();
+    sim.addPlayer('p0');
+    const m = aMinion(sim);
+    parkCrowdFar(sim, m);
+    const p = sim.players.get('p0')!;
+    // player parked ON the DJ stand; the minion is put straight on the shoo
+    const s = CONFIG.room.stage;
+    p.body.setTranslation({ x: 1.2, y: s.h + 0.85, z: -4.3 }, true);
+    m.body.setTranslation({ x: 1.2, y: 1.0, z: -2.6 }, true);
+    m.minionMode = 3;
+    m.huntTarget = p;
+    let everGripped = false;
+    let released = false;
+    for (let i = 0; i < 60 * 45 && !released; i++) {
+      const inputs = new Map<string, PlayerInput>();
+      inputs.set('p0', { ...ZERO_INPUT });
+      sim.step(inputs);
+      p.heat = 0; // heat/ejection is a different system — the RELEASE is under test
+      if (m.grip) everGripped = true;
+      if (everGripped && !m.grip && (m.minionMode as number) === 0) released = true; // sim.step mutates it — TS can't see that
+    }
+    expect(everGripped).toBe(true); // they did come and drag you
+    expect(released).toBe(true); // and LET GO once you were off the stand
+    expect(p.out).toBe(false); // a shoo is not an ejection
+    const pp = p.pos();
+    // dumped on the floor, off the restricted area
+    expect(pp.y).toBeLessThan(1.05);
+  }, 60000);
+
+  it('a walker heading for the line joins BEHIND whoever got there first (b17)', () => {
+    const B = CONFIG.bathroom;
+    const sim = new Sim();
+    sim.addPlayer('p0');
+    (sim as unknown as { needTimer: number }).needTimer = 1e9;
+    blindMinions(sim);
+    // stall busy so the line holds still
+    const campers = sim.npcs.filter((n) => !n.isMinion && !n.isDJ && !n.isDancer);
+    const occ = campers[5];
+    occ.body.setTranslation({ x: -7.3, y: 1.0, z: 5.1 }, true);
+    occ.walkerMode = 3;
+    occ.stallT = 600;
+    // the player is ALREADY standing at the back slot (slot 0 — empty line)
+    const p = sim.players.get('p0')!;
+    const s0 = { x: B.doorMidX, z: B.innerZ - B.queueGap0 };
+    p.body.setTranslation({ x: s0.x, y: 0.85, z: s0.z }, true);
+    // a walker far across the room gets the tap at the same moment
+    const w = campers[0];
+    w.body.setTranslation({ x: 5.5, y: 1.0, z: 1.0 }, true);
+    w.walkerMode = 1;
+    let joined = false;
+    for (let i = 0; i < 60 * 30 && !joined; i++) {
+      const inputs = new Map<string, PlayerInput>();
+      inputs.set('p0', { ...ZERO_INPUT });
+      sim.step(inputs);
+      // hold the player planted on the slot (idle sway drifts)
+      if (i % 60 === 0) {
+        p.body.setTranslation({ x: s0.x, y: 0.85, z: s0.z }, true);
+        p.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
+      }
+      if (sim.queue.includes(w)) joined = true;
+    }
+    expect(joined).toBe(true);
+    // "I was here first": the walker filed in BEHIND the player
+    expect(sim.queue.indexOf(p)).toBe(0);
+    expect(sim.queue.indexOf(w)).toBe(1);
+  }, 60000);
+
+  it('standing still while wrecked draws far less heat than stumbling around (b17)', () => {
+    const sim = new Sim();
+    sim.addPlayer('p0');
+    const m = aMinion(sim);
+    parkCrowdFar(sim, m);
+    const p = sim.players.get('p0')!;
+    p.kLevel = 4;
+    p.kFelt = 4;
+    p.kLastChange = 1e9;
+    // watcher square in front, eyes PINNED on them (mode-1 scanning sweeps
+    // the gaze — hold it steady so the comparison measures the rates)
+    p.body.setTranslation({ x: -2, y: 0.85, z: 1.0 }, true);
+    plantWatcher(m, -2, 3.0, Math.PI);
+    // the yaw servo turns a planted 100 kg body SLOWLY — start it facing them
+    m.body.setRotation({ x: 0, y: Math.sin(Math.PI / 2), z: 0, w: Math.cos(Math.PI / 2) }, true);
+    const stare = (steps: number, input: Partial<PlayerInput> = {}) => {
+      for (let i = 0; i < steps; i++) {
+        m.scanYaw = Math.PI;
+        const inputs = new Map<string, PlayerInput>();
+        inputs.set('p0', { ...ZERO_INPUT, ...input });
+        sim.step(inputs);
+      }
+    };
+    stare(20);
+    p.heat = 0;
+    stare(60 * 3); // standing dead still
+    const stillHeat = p.heat;
+    p.heat = 0;
+    p.body.setTranslation({ x: -2, y: 0.85, z: 0.2 }, true);
+    stare(60 * 3, { moveZ: 1 }); // lurching toward the watcher
+    const movingHeat = p.heat;
+    expect(stillHeat).toBeGreaterThan(0); // still watched, faintly
+    expect(movingHeat).toBeGreaterThan(stillHeat * 2.5); // moving is the giveaway
+  }, 30000);
+
+  it('nobody strolls through the dancefloor as ordinary walking (b17)', () => {
+    const sim = new Sim();
+    sim.addPlayer('p0');
+    const Z = CONFIG.crowd.danceZone;
+    let inside = 0;
+    let samples = 0;
+    for (let i = 0; i < 60 * 60; i++) {
+      const inputs = new Map<string, PlayerInput>();
+      inputs.set('p0', { ...ZERO_INPUT });
+      sim.step(inputs);
+      if (i % 20 !== 0) continue;
+      for (const n of sim.npcs) {
+        if (n.isDancer || n.isDJ) continue;
+        if (n.state !== 0) continue;
+        samples++;
+        const p = n.pos();
+        if (Math.hypot(p.x - Z.x, p.z - Z.z) < Z.r) inside++;
+      }
+    }
+    // walkers + patrolling minions skirt the floor now — a stray shove-in is
+    // fine, a steady stream of through-traffic is not
+    expect(inside / samples).toBeLessThan(0.05);
+  }, 120000);
+
   it('a hunter that fully loses line of sight gives up the pursuit', () => {
     const sim = new Sim();
     sim.addPlayer('p0');
@@ -291,5 +418,102 @@ describe('the night', () => {
     expect(m.minionMode).not.toBe(2); // forgot us
     expect(p.heat).toBeLessThanOrEqual(CONFIG.curator.losCooldownHeat + 0.01);
     expect(p.out).toBe(false);
+  }, 30000);
+});
+
+// b17: the dance economy — the boogie meter only dancing refills, dancing
+// costs energy (less on K), and dancing in the pack hides how wrecked you are
+describe('the boogie meter (b17)', () => {
+  it('drains while standing around and fills while dancing', () => {
+    const sim = new Sim();
+    sim.addPlayer('p0');
+    parkCrowdFar(sim);
+    blindMinions(sim);
+    const p = sim.players.get('p0')!;
+    run(sim, 60 * 6);
+    const drained = p.boogie;
+    expect(drained).toBeLessThan(1);
+    expect(drained).toBeGreaterThan(0.9); // ~3 min full-to-empty, not seconds
+    run(sim, 60 * 6, { dance: true }); // E toggles ON at the first press
+    expect(p.dancingNow).toBe(true);
+    expect(p.boogie).toBeGreaterThan(drained); // dancing refills it
+  }, 30000);
+
+  it('zero boogie = out of the club, with its own reason on the wire', () => {
+    const sim = new Sim();
+    sim.addPlayer('p0');
+    parkCrowdFar(sim);
+    blindMinions(sim);
+    const p = sim.players.get('p0')!;
+    p.boogie = 0.001;
+    run(sim, 60 * 2);
+    expect(p.out).toBe(true);
+    expect(p.outWhy).toBe(1);
+    expect(sim.snapshot().players['p0'].outWhy).toBe(1);
+    expect(sim.snapshot().players['p0'].pos.z).toBeGreaterThan(CONFIG.room.d / 2);
+  });
+
+  it('dancing burns the bar faster than standing — and K discounts the difference', () => {
+    const sim = new Sim();
+    sim.addPlayer('p0');
+    parkCrowdFar(sim);
+    blindMinions(sim);
+    const p = sim.players.get('p0')!;
+    run(sim, 10);
+    p.stamina = 0.9;
+    run(sim, 60 * 4, { dance: true });
+    const danceCost = 0.9 - p.stamina;
+    p.danceOn = false;
+    run(sim, 5);
+    p.stamina = 0.9;
+    run(sim, 60 * 4);
+    const idleCost = 0.9 - p.stamina;
+    expect(danceCost).toBeGreaterThan(idleCost * 1.8); // dancing costs real energy
+    // the same dance, deep on K, costs way less — that trade IS the loop
+    p.kLevel = 4;
+    p.kFelt = 4;
+    p.kLastChange = 1e9;
+    p.stamina = 0.9;
+    run(sim, 60 * 4, { dance: true });
+    const kDanceCost = 0.9 - p.stamina;
+    expect(kDanceCost).toBeLessThan(danceCost * 0.5);
+  }, 60000);
+
+  it('dancing in the pack hides how wrecked you are (b17)', () => {
+    const sim = new Sim();
+    sim.addPlayer('p0');
+    const m = aMinion(sim);
+    parkCrowdFar(sim, m); // the parked dancers put the pack center in the +x grid
+    const p = sim.players.get('p0')!;
+    p.kLevel = 4;
+    p.kFelt = 4;
+    p.kLastChange = 1e9;
+    // stand at the edge of the parked pack, watcher square-on with clear LOS
+    // and its gaze PINNED (mode-1 scanning would sweep it away mid-measure)
+    p.body.setTranslation({ x: 1.6, y: 0.85, z: 0.9 }, true);
+    plantWatcher(m, -0.8, 0.9, Math.PI / 2);
+    // start the heavy body already facing them (the yaw servo is slow)
+    m.body.setRotation({ x: 0, y: Math.sin(Math.PI / 4), z: 0, w: Math.cos(Math.PI / 4) }, true);
+    const stare = (steps: number, input: Partial<PlayerInput> = {}) => {
+      for (let i = 0; i < steps; i++) {
+        m.scanYaw = Math.PI / 2;
+        const inputs = new Map<string, PlayerInput>();
+        inputs.set('p0', { ...ZERO_INPUT, ...input });
+        sim.step(inputs);
+      }
+    };
+    stare(20);
+    stare(4, { dance: true });
+    expect(p.dancingNow).toBe(true);
+    p.heat = 0;
+    stare(60 * 3, { dance: true });
+    const dancingHeat = p.heat;
+    p.danceOn = false;
+    stare(5);
+    p.heat = 0;
+    stare(60 * 3);
+    const standingHeat = p.heat;
+    expect(dancingHeat).toBeLessThan(0.02); // bouncers don't bat an eye
+    expect(standingHeat).toBeGreaterThan(dancingHeat); // undanced wreckage still reads
   }, 30000);
 });

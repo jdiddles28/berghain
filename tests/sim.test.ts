@@ -215,6 +215,9 @@ describe('wobbly body physics', () => {
     const sim = new Sim();
     sim.addPlayer('p0');
     sim.addPlayer('p1');
+    // parked: the b17 dancefloor-avoid routes walkers around the perimeter,
+    // straight through the spawn area — a shove mid-pull isn't the test
+    parkCrowd(sim);
     const a = sim.players.get('p0')!;
     const b = sim.players.get('p1')!;
     const ap = a.body.translation();
@@ -245,7 +248,7 @@ describe('items — the bag of K', () => {
     run(sim, 30);
     let bag = sim.snapshot().items[0];
     expect(bag.holder).toBeNull();
-    expect(bag.doses).toBe(CONFIG.ketamine.dosesPerBag);
+    expect(bag.grams).toBeCloseTo(CONFIG.ketamine.bagGrams, 3);
     // resting ON the booth top, not inside it or on the floor
     expect(bag.pos.y).toBeGreaterThan(CONFIG.room.stage.h + CONFIG.room.dj.boardH - 0.05);
 
@@ -316,40 +319,94 @@ describe('items — the bag of K', () => {
   });
 });
 
-describe('ketamine', () => {
+describe('ketamine — grams and secret buckets (b17)', () => {
   it(
-    'bumps hit after the onset delay, k-hole at 5, and you surface again',
+    'a 0.25 g line k-holes you after the onset, and granular decay surfaces you',
     () => {
       const sim = new Sim();
       sim.addPlayer('p0');
+      parkCrowd(sim);
       run(sim, 30);
       pickUpBag(sim);
       const ch = sim.players.get('p0')!;
       const K = CONFIG.ketamine;
-      // 5 bumps = 5 separate presses. Each press is a committed animation and
-      // OVER-holding past the end must not retrigger (John's ruling) — every
-      // cycle below over-holds by a full second and still burns exactly 1.
-      for (let i = 0; i < 5; i++) {
-        run(sim, Math.ceil(60 * (K.doseAnimTime + 1.0)), { use: true, faceYaw: Math.PI });
-        run(sim, 6, { faceYaw: Math.PI }); // release before the next press
-      }
-      expect(sim.snapshot().items[0].doses).toBe(K.dosesPerBag - 5);
+      expect(sim.snapshot().items[0].holder).toBe('p0');
+      // pour a quarter onto the phone, then hoover it in one stroke — the
+      // host clamps the pour against the bag and the snort against the phone
+      run(sim, 1, { cutPhase: 1, pour: 0.25, faceYaw: Math.PI });
+      expect(ch.phoneG).toBeCloseTo(0.25, 4);
+      expect(sim.snapshot().items[0].grams).toBeCloseTo(K.bagGrams - 0.25, 3);
+      run(sim, 1, { cutPhase: 3, snort: 0.25, use: true, faceYaw: Math.PI });
+      expect(ch.phoneG).toBeCloseTo(0, 4);
       expect(ch.kLevel).toBe(0); // nothing has HIT yet — onset delay
-      // onset: all five arrive → level 5 → k-hole (down, and STAYS down)
       run(sim, Math.ceil(60 * (K.onsetDelay + 2)));
-      expect(ch.kLevel).toBe(K.maxLevel);
+      expect(ch.kLevel).toBe(K.maxLevel); // 0.25 g IS the hole, exactly
       expect(sim.snapshot().players['p0'].st).toBe(1);
       expect(sim.snapshot().items[0].holder).toBeNull(); // the bag hit the floor with you
       run(sim, 60 * 5);
       expect(sim.snapshot().players['p0'].st).toBe(1); // still gone
       expect(sim.snapshot().players['p0'].k).toBeGreaterThan(2); // felt level caught up
-      // decay to level 4 → allowed to get back up, wobblier and slower
-      run(sim, Math.ceil(60 * (K.decayEvery + CONFIG.balance.downTime + 8)));
+      // granular decay (half-level steps): surface at 4.5 → allowed back up
+      run(
+        sim,
+        Math.ceil(60 * (K.decayEvery * K.decayStep + CONFIG.balance.downTime + 8)),
+      );
       expect(ch.kLevel).toBeLessThan(K.maxLevel);
       expect(sim.snapshot().players['p0'].st).toBe(0);
     },
     120000,
   );
+
+  it('a sloppy-looking line registers as the nearest 0.025 g bucket', () => {
+    const sim = new Sim();
+    sim.addPlayer('p0');
+    parkCrowd(sim);
+    run(sim, 30);
+    pickUpBag(sim);
+    const ch = sim.players.get('p0')!;
+    run(sim, 1, { cutPhase: 1, pour: 0.2, faceYaw: Math.PI });
+    // 0.031 g LOOKS like more than a bucket — it hits as exactly one (0.5 level)
+    run(sim, 1, { cutPhase: 3, snort: 0.031, use: true, faceYaw: Math.PI });
+    run(sim, Math.ceil(60 * (CONFIG.ketamine.onsetDelay + 2)));
+    expect(ch.kLevel).toBeCloseTo(0.5, 5);
+  }, 60000);
+
+  it('an overdose stacks PAST the hole — double the line, wait down the extra', () => {
+    const sim = new Sim();
+    sim.addPlayer('p0');
+    parkCrowd(sim);
+    run(sim, 30);
+    pickUpBag(sim);
+    const ch = sim.players.get('p0')!;
+    const K = CONFIG.ketamine;
+    run(sim, 1, { cutPhase: 1, pour: 0.5, faceYaw: Math.PI });
+    run(sim, 1, { cutPhase: 3, snort: 0.5, use: true, faceYaw: Math.PI });
+    run(sim, Math.ceil(60 * (K.onsetDelay + 2)));
+    expect(ch.kLevel).toBe(K.levelCap); // internally 10 — John's "level 20"
+    expect(sim.snapshot().players['p0'].st).toBe(1);
+    // one decay tick later you are STILL nowhere near surfacing
+    run(sim, Math.ceil(60 * (K.decayEvery * K.decayStep + 2)));
+    expect(ch.kLevel).toBeGreaterThanOrEqual(K.maxLevel);
+    expect(sim.snapshot().players['p0'].st).toBe(1);
+  }, 90000);
+
+  it('the ritual needs the tools: no card in anyone’s pockets = no phase 2', () => {
+    const sim = new Sim();
+    sim.addPlayer('p0');
+    parkCrowd(sim);
+    run(sim, 30);
+    pickUpBag(sim);
+    const ch = sim.players.get('p0')!;
+    // throw the card away
+    const card = ch.slots.find((s) => s && s.kind === 1)!;
+    ch.slots[ch.slots.indexOf(card)] = null;
+    card.holder = null;
+    card.holderId = null;
+    run(sim, 1, { cutPhase: 2, faceYaw: Math.PI });
+    expect(ch.cutPhase).toBe(0); // host said no
+    run(sim, 1, { cutPhase: 1, faceYaw: Math.PI });
+    expect(ch.cutPhase).toBe(1); // pouring only needs the bag
+  });
 
   it(
     'being high slows your walk',

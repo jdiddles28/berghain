@@ -55,6 +55,9 @@ export class ClubberView {
   private headMat: THREE.MeshLambertMaterial;
   private browL!: THREE.Mesh;
   private browR!: THREE.Mesh;
+  /** the phone (b17): not an item — it appears in the LEFT hand only while
+   *  this body is mid-cutting-ritual, so everyone can SEE what's happening */
+  private phone!: THREE.Mesh;
 
   constructor(outfit: number, skin: number, scale = 1, minion = false) {
     this.scale = scale;
@@ -102,6 +105,15 @@ export class ClubberView {
     const armGeo = new THREE.CapsuleGeometry(0.068 * s, 0.36 * s, 1, 5);
     this.armL = this.limb(armGeo, outfitMat, -0.28 * s, 0.4 * s, -0.22 * s);
     this.armR = this.limb(armGeo, outfitMat, 0.28 * s, 0.4 * s, -0.22 * s);
+    // the phone rides the +x arm's hand end (renders as the LEFT hand — the
+    // -x arm is the right hand, see the handedness note in update())
+    this.phone = new THREE.Mesh(
+      new THREE.BoxGeometry(0.05 * s, 0.006 * s, 0.1 * s),
+      new THREE.MeshLambertMaterial({ color: 0x0c0c12, flatShading: true }),
+    );
+    this.phone.position.set(0, -0.46 * s, 0);
+    this.phone.visible = false;
+    this.armR.add(this.phone);
 
     // two-segment legs: thigh from the hip, shin from the knee. thick enough
     // to read as legs, and the knee is what makes walking look like STEPPING
@@ -187,15 +199,27 @@ export class ClubberView {
     const speed = Math.hypot(b.vel.x, b.vel.z);
     this.walkPhase += speed * dt * 5.2;
 
-    // dosing: the bag comes up to the face — the carrying arm tracks it.
+    // SNORTING (b17): head over the phone, the bill hand up at the face —
+    // John: this one gesture must be unmistakable from across the room.
     // NOTE on handedness: the arm at -x ("armL" here) RENDERS as the
     // character's right hand (+x draws screen-left in FP) — and John wants
     // items carried in the right hand, so the -x arm does the carrying.
+    this.phone.visible = (b.act === 1 || b.act === 6) && b.st !== 1;
     if (b.act === 1 && b.st !== 1) {
       if (opts?.holdTarget) this.aimArm(this.armL, opts.holdTarget);
       else this.armL.rotation.set(-2.5, 0, 0.3);
-      this.armR.rotation.set(-0.2, 0, -0.15);
-      this.legsWalk(speed);
+      this.armR.rotation.set(-1.75, -0.4, -0.3); // the phone stays up under the sniff
+      this.legsIdle();
+      return;
+    }
+
+    // MID-RITUAL (b17): phone out flat in the left hand, the working hand
+    // (bag, then card, then bill — the held item) busy just above it
+    if (b.act === 6 && b.st !== 1) {
+      this.armR.rotation.set(-1.5, -0.35, -0.25);
+      if (opts?.holdTarget) this.aimArm(this.armL, opts.holdTarget);
+      else this.armL.rotation.set(-1.35, 0.2, 0.35);
+      this.legsIdle();
       return;
     }
 

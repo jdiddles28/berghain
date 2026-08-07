@@ -4,7 +4,8 @@
 
 import * as THREE from 'three';
 import { CONFIG } from '../config';
-import type { RenderFrame } from '../sim/types';
+import type { Cutting } from '../cutting';
+import type { ItemKind, RenderFrame } from '../sim/types';
 import { ClubberView } from './clubberView';
 
 export class View {
@@ -14,12 +15,22 @@ export class View {
 
   private players = new Map<string, ClubberView>();
   private npcs: ClubberView[] = [];
-  private itemViews: {
-    group: THREE.Group;
-    mats: THREE.MeshLambertMaterial[];
-    outline: THREE.Mesh;
-    outlineMat: THREE.MeshBasicMaterial;
-  }[] = [];
+  private itemViews: (
+    | {
+        group: THREE.Group;
+        mats: THREE.MeshLambertMaterial[];
+        outline: THREE.Mesh;
+        outlineMat: THREE.MeshBasicMaterial;
+        fill: THREE.Mesh | null; // bags: the visible powder level
+      }
+    | null
+  )[] = [];
+  // the cutting ritual, first person (b17): a phone in front of the camera,
+  // the powder canvas mapped onto its glass, the phase's tool riding the hand
+  private cutRig!: THREE.Group;
+  private cutScreenTex!: THREE.CanvasTexture;
+  private cutProps!: { bag: THREE.Group; card: THREE.Mesh; bill: THREE.Mesh };
+  private fog: THREE.Fog;
   private beams: { light: THREE.PointLight; baseColor: THREE.Color; phase: number }[] = [];
   private strobe: THREE.PointLight;
   private lastTime = 0;
@@ -49,7 +60,10 @@ export class View {
     container.appendChild(this.renderer.domElement);
 
     this.scene.background = new THREE.Color(0x030308);
-    this.scene.fog = new THREE.Fog(0x030308, 6, 26);
+    // the fog is DYNAMIC (b17): sober it sits at the sober range; the higher
+    // you are, the closer the dark closes in (view-side, own player only)
+    this.fog = new THREE.Fog(0x030308, CONFIG.ketamine.fog.nearSober, CONFIG.ketamine.fog.farSober);
+    this.scene.fog = this.fog;
 
     // the fade quad that eats old frames when trails are on
     this.fadeCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
@@ -90,6 +104,104 @@ export class View {
     this.strobe = new THREE.PointLight(0xffffff, 0, 20, 1.2);
     this.strobe.position.set(0, CONFIG.room.wallH - 0.4, 0);
     this.scene.add(this.strobe);
+
+    // the camera joins the scene graph so the cutting rig can ride it
+    this.scene.add(this.camera);
+    this.buildCutRig();
+  }
+
+  /** the first-person cutting rig (b17): phone in the left hand filling the
+   *  bottom of the frame, powder canvas on its glass, the phase's tool
+   *  hovering wherever the mouse-hand is. Only visible mid-ritual. */
+  private buildCutRig(): void {
+    const CT = CONFIG.cutting;
+    this.cutRig = new THREE.Group();
+    this.cutRig.position.set(0.0, -0.1, -0.26);
+    // rotate the glass normal from straight-up TOWARD the camera (+z): the
+    // screen fills the lower frame like a phone actually held under your face
+    this.cutRig.rotation.x = 0.62;
+    this.camera.add(this.cutRig);
+    this.cutRig.visible = false;
+
+    // the phone: dark slab, glass on top (+y in rig space)
+    const phone = new THREE.Mesh(
+      new THREE.BoxGeometry(CT.screenW + 0.012, 0.009, CT.screenH + 0.02),
+      new THREE.MeshLambertMaterial({ color: 0x0a0a0e, flatShading: true }),
+    );
+    this.cutRig.add(phone);
+    const canvas = document.createElement('canvas'); // real one wired in render()
+    canvas.width = canvas.height = 8;
+    this.cutScreenTex = new THREE.CanvasTexture(canvas);
+    // color textures must be tagged sRGB or the near-black glass gamma-lifts
+    // to mid-grey (the renderer outputs sRGB and assumed the map was linear)
+    this.cutScreenTex.colorSpace = THREE.SRGBColorSpace;
+    const glass = new THREE.Mesh(
+      new THREE.PlaneGeometry(CT.screenW, CT.screenH),
+      new THREE.MeshBasicMaterial({ map: this.cutScreenTex }),
+    );
+    glass.rotation.x = -Math.PI / 2; // lie on the phone, facing +y
+    glass.position.y = 0.0052;
+    this.cutRig.add(glass);
+    // a thumb-ish holder edge so it reads as HELD, not floating
+    const thumb = new THREE.Mesh(
+      new THREE.CapsuleGeometry(0.011, 0.05, 1, 5),
+      new THREE.MeshLambertMaterial({ color: 0xc8a186, flatShading: true }),
+    );
+    thumb.rotation.z = 1.2;
+    thumb.position.set(-CT.screenW / 2 - 0.012, 0.004, 0.02);
+    this.cutRig.add(thumb);
+
+    // the tools, one visible at a time, riding the mouse-hand
+    const I = CONFIG.items;
+    const bag = this.buildBaggy(1);
+    bag.rotation.z = 0.55; // tilted to the left, mouth over the glass (John)
+    bag.rotation.x = 0.35;
+    const card = new THREE.Mesh(
+      new THREE.BoxGeometry(I.card.w, I.card.h + 0.002, I.card.d),
+      new THREE.MeshLambertMaterial({ color: 0x9fb4c8, flatShading: true }),
+    );
+    card.rotation.y = Math.PI / 2;
+    card.rotation.z = -0.25; // edge biting the glass
+    const bill = new THREE.Mesh(
+      new THREE.CylinderGeometry(I.bill.r, I.bill.r, I.bill.len, 8),
+      new THREE.MeshLambertMaterial({ color: 0x9aa876, flatShading: true }),
+    );
+    bill.rotation.x = 0.75; // held like a straw, top toward your face
+    for (const m of [bag, card, bill]) {
+      m.visible = false;
+      this.cutRig.add(m);
+    }
+    this.cutProps = { bag, card, bill };
+  }
+
+  /** the ziplock baggy (b17, John: the old bag read as a cigarette pack):
+   *  translucent plastic pouch, opaque white powder filling it from the
+   *  bottom — the fill level IS the remaining grams, never a number */
+  private buildBaggy(fillFrac: number): THREE.Group {
+    const I = CONFIG.items.kbag;
+    const g = new THREE.Group();
+    const plastic = new THREE.Mesh(
+      new THREE.BoxGeometry(I.w, I.h, I.d),
+      new THREE.MeshLambertMaterial({
+        color: 0xdfe4ee,
+        transparent: true,
+        opacity: 0.3,
+        flatShading: true,
+      }),
+    );
+    const zip = new THREE.Mesh(
+      new THREE.BoxGeometry(I.w + 0.002, 0.012, I.d + 0.002),
+      new THREE.MeshLambertMaterial({ color: 0x8f94a8, flatShading: true }),
+    );
+    zip.position.y = I.h / 2 - 0.006;
+    const fill = new THREE.Mesh(
+      new THREE.BoxGeometry(I.w - 0.012, I.h - 0.02, I.d - 0.008),
+      new THREE.MeshLambertMaterial({ color: 0xf2f2f5, flatShading: true }),
+    );
+    fill.name = 'fill';
+    setBaggyFill(fill, fillFrac);
+    g.add(plastic, zip, fill);
+    return g;
   }
 
   private buildRoom(): void {
@@ -254,31 +366,60 @@ export class View {
     }
   }
 
-  /** items are tiny and the room is dark — they read bright on purpose */
-  private ensureItem(i: number): void {
-    while (this.itemViews.length <= i) {
-      const group = new THREE.Group();
-      const bagMat = new THREE.MeshLambertMaterial({ color: 0xdfdfe8, flatShading: true });
-      const zipMat = new THREE.MeshLambertMaterial({ color: 0x8f94a8, flatShading: true });
-      const bag = new THREE.Mesh(new THREE.BoxGeometry(0.11, 0.05, 0.14), bagMat);
-      const zip = new THREE.Mesh(new THREE.BoxGeometry(0.112, 0.014, 0.028), zipMat);
-      zip.position.set(0, 0.02, -0.06);
-      // pickup highlight: an inflated backface shell — reads as a clean
-      // colored outline around the object at any angle in the dark (John:
-      // the emissive-only glow didn't read at all)
-      const outlineMat = new THREE.MeshBasicMaterial({
-        color: 0xffd54a,
-        side: THREE.BackSide,
-        transparent: true,
-        opacity: 0.95,
+  /** items are tiny and the room is dark — they read bright on purpose.
+   *  Built lazily per KIND (b17): baggy of powder / credit card / rolled bill. */
+  private ensureItem(i: number, kind: ItemKind): NonNullable<View['itemViews'][number]> {
+    while (this.itemViews.length <= i) this.itemViews.push(null);
+    const existing = this.itemViews[i];
+    if (existing) return existing;
+    const I = CONFIG.items;
+    const group = new THREE.Group();
+    const mats: THREE.MeshLambertMaterial[] = [];
+    let fill: THREE.Mesh | null = null;
+    let outlineGeo: THREE.BufferGeometry;
+    if (kind === 0) {
+      const baggy = this.buildBaggy(1);
+      baggy.traverse((o) => {
+        if (o instanceof THREE.Mesh && o.material instanceof THREE.MeshLambertMaterial)
+          mats.push(o.material);
       });
-      const outline = new THREE.Mesh(new THREE.BoxGeometry(0.11, 0.05, 0.14), outlineMat);
-      outline.scale.setScalar(1.45);
-      outline.visible = false;
-      group.add(bag, zip, outline);
-      this.scene.add(group);
-      this.itemViews.push({ group, mats: [bagMat, zipMat], outline, outlineMat });
+      fill = baggy.getObjectByName('fill') as THREE.Mesh;
+      group.add(baggy);
+      outlineGeo = new THREE.BoxGeometry(I.kbag.w, I.kbag.h, I.kbag.d);
+    } else if (kind === 1) {
+      const mat = new THREE.MeshLambertMaterial({ color: 0x9fb4c8, flatShading: true });
+      const stripe = new THREE.MeshLambertMaterial({ color: 0x2b2f45, flatShading: true });
+      mats.push(mat, stripe);
+      const card = new THREE.Mesh(new THREE.BoxGeometry(I.card.w, I.card.h + 0.002, I.card.d), mat);
+      const band = new THREE.Mesh(new THREE.BoxGeometry(I.card.w, I.card.h + 0.003, 0.012), stripe);
+      band.position.z = -I.card.d / 2 + 0.014;
+      group.add(card, band);
+      outlineGeo = new THREE.BoxGeometry(I.card.w, 0.012, I.card.d);
+    } else {
+      const mat = new THREE.MeshLambertMaterial({ color: 0x9aa876, flatShading: true });
+      mats.push(mat);
+      const bill = new THREE.Mesh(new THREE.CylinderGeometry(I.bill.r, I.bill.r, I.bill.len, 8), mat);
+      bill.rotation.x = Math.PI / 2;
+      group.add(bill);
+      outlineGeo = new THREE.BoxGeometry(I.bill.r * 2.6, I.bill.r * 2.6, I.bill.len);
     }
+    // pickup highlight: an inflated backface shell — reads as a clean
+    // colored outline around the object at any angle in the dark (John:
+    // the emissive-only glow didn't read at all)
+    const outlineMat = new THREE.MeshBasicMaterial({
+      color: 0xffd54a,
+      side: THREE.BackSide,
+      transparent: true,
+      opacity: 0.95,
+    });
+    const outline = new THREE.Mesh(outlineGeo, outlineMat);
+    outline.scale.setScalar(1.45);
+    outline.visible = false;
+    group.add(outline);
+    this.scene.add(group);
+    const iv = { group, mats, outline, outlineMat, fill };
+    this.itemViews[i] = iv;
+    return iv;
   }
 
   ensurePlayer(id: string, slot: number): void {
@@ -306,25 +447,52 @@ export class View {
     camPitch: number,
     localId: string,
     targetedItem = -1,
+    cut: Cutting | null = null,
   ): void {
     const dt = Math.min(0.1, Math.max(0.0001, frame.time - this.lastTime));
     this.lastTime = frame.time;
+    const cutting = !!cut?.active;
 
     // items (before bodies: held items are arm-aim targets)
     const heldBy = new Map<string, THREE.Vector3>();
     for (let i = 0; i < frame.items.length; i++) {
-      this.ensureItem(i);
       const it = frame.items[i];
-      const iv = this.itemViews[i];
+      const iv = this.ensureItem(i, it.kind);
       iv.group.position.set(it.pos.x, it.pos.y, it.pos.z);
       iv.group.quaternion.set(it.rot.x, it.rot.y, it.rot.z, it.rot.w);
-      if (it.holder) heldBy.set(it.holder, iv.group.position);
+      // pocketed items don't render (b17); the local in-hand item also hides
+      // mid-ritual — the FP rig draws its own copy over the phone
+      iv.group.visible = !it.stowed && !(cutting && it.holder === localId);
+      if (it.holder && !it.stowed) heldBy.set(it.holder, iv.group.position);
+      // the baggy tells you how much is left by LOOKING at it (never a number)
+      if (iv.fill) setBaggyFill(iv.fill, it.grams / CONFIG.ketamine.bagGrams);
       // Peak-style pickup highlight: outline shell + a little inner glow
       const on = i === targetedItem;
       iv.outline.visible = on;
       if (on) iv.outlineMat.opacity = 0.75 + 0.25 * Math.sin(frame.time * 6);
       const glow = on ? 0.3 : 0;
       for (const m of iv.mats) m.emissive.setRGB(glow, glow, glow * 0.6);
+    }
+
+    // the cutting rig rides the camera (b17)
+    this.cutRig.visible = cutting;
+    if (cut && cutting) {
+      cut.draw();
+      if (this.cutScreenTex.image !== cut.canvas) this.cutScreenTex.image = cut.canvas;
+      this.cutScreenTex.needsUpdate = true;
+      const CT = CONFIG.cutting;
+      const px = (cut.handX - 0.5) * CT.screenW;
+      const pz = (cut.handY - 0.5) * CT.screenH;
+      this.cutProps.bag.visible = cut.phase === 1;
+      this.cutProps.card.visible = cut.phase === 2;
+      this.cutProps.bill.visible = cut.phase === 3;
+      this.cutProps.bag.position.set(px, 0.05, pz);
+      this.cutProps.card.position.set(px, 0.008, pz);
+      this.cutProps.bill.position.set(px, 0.03, pz);
+      // the rig's baggy shows the REAL remaining grams while you pour
+      const myBag = frame.items.find((it) => it.holder === localId && it.kind === 0);
+      const bf = this.cutProps.bag.getObjectByName('fill') as THREE.Mesh | null;
+      if (bf && myBag) setBaggyFill(bf, myBag.grams / CONFIG.ketamine.bagGrams);
     }
 
     // players
@@ -462,6 +630,11 @@ export class View {
       // scale pulse), a hue drift deep in it.
       const kv = (k * k) / 4;
       const inHole = me.st === 1 && k >= K.maxLevel - 0.8;
+      // the dark closes IN, not just down (b17, John): real distance fog
+      // per level — deep in it you can't see across the room at all
+      const fogT = Math.min(1, kv / 5);
+      this.fog.near = K.fog.nearSober + (K.fog.nearHigh - K.fog.nearSober) * fogT;
+      this.fog.far = K.fog.farSober + (K.fog.farHigh - K.fog.farSober) * fogT;
       const blur = inHole ? K.kholeBlur : kv * K.blurPerLevel;
       const bright = Math.max(0.45, 1 - K.darkenPerLevel * kv - (inHole ? 0.2 : 0));
       const sat = Math.max(0.55, 1 - 0.07 * kv);
@@ -485,7 +658,10 @@ export class View {
         this.renderer.domElement.style.transform = transform;
       }
       if (this.vignette) {
-        const vig = Math.min(1, Math.max(0, (k - K.vignetteFrom) / 2.4)) * 0.75;
+        // mid-ritual all you can really see is the stuff in front of you
+        // (John) — the tunnel doubles as the cutting focus
+        const kVig = Math.min(1, Math.max(0, (k - K.vignetteFrom) / 2.4)) * 0.75;
+        const vig = Math.max(kVig, cutting ? 0.55 : 0);
         const vigStr = vig.toFixed(2);
         if (vigStr !== this.lastVigOpacity) {
           this.lastVigOpacity = vigStr;
@@ -519,4 +695,14 @@ export class View {
 
     this.renderer.render(this.scene, this.camera);
   }
+}
+
+/** scale the baggy's powder block to the remaining fraction, anchored at the
+ *  bottom of the pouch — how full it LOOKS is all the knowledge you get */
+function setBaggyFill(fill: THREE.Mesh, frac: number): void {
+  const h = CONFIG.items.kbag.h - 0.02;
+  const f = Math.max(0.03, Math.min(1, frac));
+  fill.scale.y = f;
+  fill.position.y = (-h + h * f) / 2;
+  fill.visible = frac > 0.005;
 }

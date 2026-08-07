@@ -31,7 +31,9 @@ export const INTERP_DELAY_SNAPS = 2.5;
 // ceiling shrinks (computed from nightT — wire unchanged).
 // b16: queue precision + roaming crowd distribution (host-sim only — wire
 // unchanged; bumped so mixed-build rooms fail loudly instead of feeling off).
-export const PROTOCOL_VERSION = 16;
+// b17: the cutting-ritual wire — input carries slot/cutPhase/pour/snort,
+// bodies carry boogie + outWhy, items carry grams + stowed/slot flags.
+export const PROTOCOL_VERSION = 17;
 
 // ICE: STUN discovers a direct path between machines; TURN *relays* traffic
 // when hard NATs (phone-hotspot carrier CGNAT, strict office wifi) refuse
@@ -124,6 +126,10 @@ export type FastMsg =
       u: 0 | 1;
       d: 0 | 1;
       dn: 0 | 1; // dance held
+      sl: number; // selected inventory slot 0-2 (b17)
+      cp: 0 | 1 | 2 | 3; // cutting-ritual phase (b17)
+      pr: number; // grams poured onto the phone since the last packet (b17)
+      sn: number; // grams committed by finished snort strokes since the last packet (b17)
     }
   | { t: 'pi'; n: number }
   | { t: 'po'; n: number };
@@ -139,11 +145,14 @@ export type FastMsg =
 //   u8 nPlayers · u8 nNpcs · u8 nItems
 //   per player: u8 playerNum, body
 //   per npc:    body
-//   body: u8 st · u8 act · u8 k(×51) · u8 stam(×255) · u8 watch(×255) ·
-//         u8 flags(bit0 out · bit1 hasGrip) ·
+//   body: u8 st · u8 act · u8 k(×51) · u8 stam(×255) · u8 boogie(×255) ·
+//         u8 watch(×255) ·
+//         u8 flags(bit0 out · bit1 hasGrip · bit2 asleep · bit3 angry ·
+//                  bit4 outWhy) ·
 //         i16 pos xyz (mm) · i16 quat xyzw (×32000) · i16 vel xyz (mm/s) ·
 //         [i16 grip xyz (mm) if hasGrip]
-//   per item: u8 kind · u8 holderNum (255 = loose) · u8 doses ·
+//   per item: u8 kind · u8 holderNum (255 = loose) · u8 grams(×100) ·
+//             u8 flags(bit0 stowed · bits1-2 slot) ·
 //             i16 pos xyz (mm) · i16 quat xyzw (×32000)
 
 const QP = 1000; // position → mm
@@ -155,7 +164,7 @@ export function encodeSnapshot(seq: number, snap: SimSnapshot): ArrayBuffer {
   let size = 4 + 4 + 4 + 1 + 2 + 3;
   for (const id of ids) size += 1 + bodySize(snap.players[id]);
   for (const b of snap.npcs) size += bodySize(b);
-  size += snap.items.length * 17;
+  size += snap.items.length * 18;
   const buf = new ArrayBuffer(size);
   const dv = new DataView(buf);
   let o = 0;
@@ -187,7 +196,8 @@ export function encodeSnapshot(seq: number, snap: SimSnapshot): ArrayBuffer {
           ? 128 + Number(it.holder.slice(1))
           : Number(it.holder.slice(1)),
     );
-    dv.setUint8(o++, it.doses);
+    dv.setUint8(o++, Math.max(0, Math.min(255, Math.round(it.grams * 100))));
+    dv.setUint8(o++, (it.stowed ? 1 : 0) | ((it.slot & 3) << 1));
     o = writeI16x3(dv, o, it.pos.x * QP, it.pos.y * QP, it.pos.z * QP);
     o = writeQuat(dv, o, it.rot);
   }
@@ -228,7 +238,8 @@ export function decodeSnapshot(raw: ArrayBuffer | ArrayBufferView, bpm: number):
   for (let i = 0; i < nItems; i++) {
     const kind = dv.getUint8(o++) as ItemSnap['kind'];
     const holderNum = dv.getUint8(o++);
-    const doses = dv.getUint8(o++);
+    const grams = dv.getUint8(o++) / 100;
+    const iflags = dv.getUint8(o++);
     const pos = { x: dv.getInt16(o, true) / QP, y: dv.getInt16(o + 2, true) / QP, z: dv.getInt16(o + 4, true) / QP };
     o += 6;
     const rot = readQuat(dv, o);
@@ -239,7 +250,9 @@ export function decodeSnapshot(raw: ArrayBuffer | ArrayBufferView, bpm: number):
       rot,
       holder:
         holderNum === 255 ? null : holderNum >= 128 ? `n${holderNum - 128}` : `p${holderNum}`,
-      doses,
+      grams,
+      stowed: (iflags & 1) !== 0,
+      slot: (iflags >> 1) & 3,
     });
   }
   const snap: SimSnapshot = {
@@ -261,7 +274,7 @@ export function snapshotSeq(snap: SimSnapshot): number {
 }
 
 function bodySize(b: BodySnap): number {
-  return 26 + (b.gripPoint ? 6 : 0);
+  return 27 + (b.gripPoint ? 6 : 0);
 }
 
 function writeBody(dv: DataView, o: number, b: BodySnap): number {
@@ -269,10 +282,15 @@ function writeBody(dv: DataView, o: number, b: BodySnap): number {
   dv.setUint8(o++, b.act);
   dv.setUint8(o++, Math.max(0, Math.min(255, Math.round(b.k * 51))));
   dv.setUint8(o++, Math.max(0, Math.min(255, Math.round(b.stam * 255))));
+  dv.setUint8(o++, Math.max(0, Math.min(255, Math.round(b.boogie * 255))));
   dv.setUint8(o++, Math.max(0, Math.min(255, Math.round(b.watch * 255))));
   dv.setUint8(
     o++,
-    (b.out ? 1 : 0) | (b.gripPoint ? 2 : 0) | (b.asleep ? 4 : 0) | (b.angry ? 8 : 0),
+    (b.out ? 1 : 0) |
+      (b.gripPoint ? 2 : 0) |
+      (b.asleep ? 4 : 0) |
+      (b.angry ? 8 : 0) |
+      (b.outWhy === 1 ? 16 : 0),
   );
   o = writeI16x3(dv, o, b.pos.x * QP, b.pos.y * QP, b.pos.z * QP);
   o = writeQuat(dv, o, b.rot);
@@ -288,6 +306,7 @@ function readBody(dv: DataView, o: number): [BodySnap, number] {
   const act = dv.getUint8(o++) as BodySnap['act'];
   const k = dv.getUint8(o++) / 51;
   const stam = dv.getUint8(o++) / 255;
+  const boogie = dv.getUint8(o++) / 255;
   const watch = dv.getUint8(o++) / 255;
   const flags = dv.getUint8(o++);
   const hasGrip = (flags & 2) !== 0;
@@ -311,10 +330,12 @@ function readBody(dv: DataView, o: number): [BodySnap, number] {
       act,
       k,
       stam,
+      boogie,
       watch,
       out: (flags & 1) !== 0,
       asleep: (flags & 4) !== 0,
       angry: (flags & 8) !== 0,
+      outWhy: (flags & 16) !== 0 ? 1 : 0,
       gripPoint,
     },
     o,
